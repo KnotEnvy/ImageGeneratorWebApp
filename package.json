@@ -1,14 +1,18 @@
 {
   "name": "nano-banana-art-lab",
+  "homepage": "https://YOUR_GITHUB_USERNAME.github.io/YOUR_REPOSITORY_NAME",
   "version": "1.0.0",
   "private": true,
   "description": "Sleek glassmorphic web application for creative motivational messages using Google Gemini Nano Banana image models.",
   "scripts": {
     "dev": "vite --port 5180",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   },
   "devDependencies": {
+    "gh-pages": "^6.3.0",
     "vite": "^5.2.0"
   }
 }
