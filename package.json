@@ -1,0 +1,14 @@
+{
+  "name": "nano-banana-art-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sleek glassmorphic web application for creative motivational messages using Google Gemini Nano Banana image models.",
+  "scripts": {
+    "dev": "vite --port 5180",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
+  }
+}
