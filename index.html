@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nano Banana — Creative Motivational Art Lab</title>
+    <title>Nano Banana - Creative Motivational Art Lab</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -49,10 +49,14 @@
             </button>
             <button class="nav-btn" id="nav-settings">
                 <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                Setup
+                Server
+            </button>
+            <button class="nav-btn" id="nav-admin">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.4 8.7-8 9-4.6-.3-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-5"/></svg>
+                Admin
             </button>
             <div class="api-key-badge" id="api-key-badge">
-                <span class="indicator">●</span> Key Missing
+                <span class="indicator">*</span> Server API Setup Required
             </div>
         </nav>
     </header>
@@ -151,25 +155,20 @@
                     <div class="field-group">
                         <label class="field-label" for="model-selector">Image Engine</label>
                         <select class="input-text" id="model-selector">
-                            <optgroup label="Google Gemini">
-                                <option value="gemini-2.5-flash-image" selected>Gemini 2.5 Flash Image (Nano Banana)</option>
-                                <option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image (Nano Banana 2)</option>
-                                <option value="gemini-3-pro-image-preview">Gemini 3 Pro Image (Banana Pro)</option>
+                            <optgroup label="OpenAI">
+                                <option value="gpt-image-2" selected>GPT Image 2</option>
                             </optgroup>
-                            <optgroup label="Hugging Face (Free Open-Source)">
-                                <option value="black-forest-labs/FLUX.1-schnell">FLUX.1 Schnell (Recommended)</option>
-                                <option value="black-forest-labs/FLUX.1-dev">FLUX.1 Dev (High Quality)</option>
-                                <option value="stabilityai/stable-diffusion-3.5-large">Stable Diffusion 3.5 Large</option>
-                                <option value="stabilityai/stable-diffusion-xl-base-1.0">SDXL Base 1.0</option>
-                                <option value="hf-custom">Custom Hugging Face Model...</option>
+                            <optgroup label="Google Gemini">
+                                <option value="gemini-3.1-flash-image">Gemini 3.1 Flash Image (Nano Banana 2)</option>
+                                <option value="gemini-3-pro-image">Gemini 3 Pro Image (Banana Pro)</option>
+                                <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (Nano Banana)</option>
+                            </optgroup>
+                            <optgroup label="Hugging Face Inference Providers">
+                                <option value="black-forest-labs/FLUX.1-Krea-dev">FLUX.1 Krea Dev</option>
+                                <option value="Qwen/Qwen-Image">Qwen Image</option>
+                                <option value="ByteDance/Hyper-SD">Hyper-SD</option>
                             </optgroup>
                         </select>
-                    </div>
-
-                    <!-- Custom HF Model ID Field (hidden by default) -->
-                    <div class="field-group" id="hf-custom-group" style="display: none; margin-top: 0.5rem;">
-                        <label class="field-label" for="hf-custom-model-input">Hugging Face Model ID</label>
-                        <input type="text" class="input-text" id="hf-custom-model-input" placeholder="e.g. black-forest-labs/FLUX.1-schnell">
                     </div>
                 </div>
 
@@ -311,7 +310,7 @@
                             Signature / Author
                             <input type="checkbox" id="author-active" checked>
                         </div>
-                        <input type="text" class="input-text" id="author-text-input" value="— Franklin D. Roosevelt">
+                        <input type="text" class="input-text" id="author-text-input" value="- Franklin D. Roosevelt">
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
                             <select class="input-text" id="author-font">
                                 <option value="Inter" selected>Inter</option>
@@ -328,6 +327,11 @@
                             <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Size:</span>
                             <input type="range" class="range-slider" id="author-size" min="10" max="36" value="18">
                             <span class="range-value" id="author-size-val">18px</span>
+                        </div>
+                        <div class="range-container">
+                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Spacing:</span>
+                            <input type="range" class="range-slider" id="author-spacing" min="0" max="16" value="2">
+                            <span class="range-value" id="author-spacing-val">2px</span>
                         </div>
                         <div class="color-picker-container" style="margin-top: 0.5rem;">
                             <div class="color-swatch" style="background: #facc15;" data-color="#facc15"></div>
@@ -443,6 +447,7 @@
                         </svg>
                     </div>
                     <div class="loading-text" id="loading-status-text">Synthesizing Pixels...</div>
+                    <button class="loading-cancel-btn" id="cancel-generation-btn" type="button">Cancel Generation</button>
                 </div>
 
                 <!-- Canvas Viewport -->
@@ -474,7 +479,7 @@
                         <line x1="12" y1="22.08" x2="12" y2="12" />
                     </svg>
                     <h3>Studio Workspace</h3>
-                    <p>Setup your Google API Key in the "Setup" tab first, then type a message prompt and click "Synthesize Image" to start designing!</p>
+                    <p>Choose a server-configured image engine, type a message prompt, and click "Synthesize Image" to start designing.</p>
                 </div>
             </div>
         </section>
@@ -489,32 +494,108 @@
             </div>
         </section>
 
-        <!-- View 3: Settings -->
+        <!-- View 3: Server Status -->
         <section class="view-section" id="settings-view">
             <div class="settings-card">
-                <h2 class="settings-title">Studio Credentials Setup</h2>
+                <h2 class="settings-title">Account & Server Status</h2>
                 <p class="settings-intro">
-                    Configure your API keys below to generate images and enhance prompts.
-                    Your credentials are saved <strong>locally</strong> in your browser storage and are never sent to any third-party servers.
+                    Sign in to save creations to your account and use server-side provider integrations.
+                    Provider keys are configured on the server, never in the browser.
                 </p>
 
-                <div class="field-group" style="margin-top: 1rem;">
-                    <label class="field-label" for="settings-api-key-input">
-                        Google Gemini API Key
-                        <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style="font-size: 0.75rem; color: var(--accent-purple); text-decoration: none;">Get Key</a>
-                    </label>
-                    <input type="password" class="input-text" id="settings-api-key-input" placeholder="AIzaSy...">
+                <div class="account-panel">
+                    <div class="server-status-row">
+                        <span>Signed-in account</span>
+                        <strong id="account-status-text">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Email status</span>
+                        <strong id="email-status-text">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Current plan</span>
+                        <strong id="plan-status-text">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Billing status</span>
+                        <strong id="billing-status-text">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Monthly generations</span>
+                        <strong id="quota-status-text">Checking...</strong>
+                    </div>
+                    <div class="auth-grid" id="auth-form">
+                        <input type="email" class="input-text" id="auth-email-input" placeholder="email@example.com" autocomplete="email">
+                        <input type="password" class="input-text" id="auth-password-input" placeholder="Password" autocomplete="current-password">
+                        <button class="settings-save-btn" id="sign-in-btn" type="button">Sign In</button>
+                        <button class="settings-save-btn secondary" id="sign-up-btn" type="button">Create Account</button>
+                    </div>
+                    <button class="settings-save-btn secondary" id="request-password-reset-btn" type="button">Request Password Reset</button>
+                    <div class="auth-grid" id="reset-password-panel" style="display: none;">
+                        <input type="password" class="input-text" id="reset-password-input" placeholder="New password" autocomplete="new-password">
+                        <button class="settings-save-btn" id="reset-password-submit-btn" type="button">Set New Password</button>
+                    </div>
+                    <button class="settings-save-btn secondary" id="sign-out-btn" type="button" style="display: none;">Sign Out</button>
+                    <button class="settings-save-btn secondary" id="send-verification-btn" type="button" style="display: none;">Send Verification Link</button>
+                    <div class="billing-actions" id="billing-actions" style="display: none;">
+                        <button class="settings-save-btn" id="upgrade-plan-btn" type="button">Upgrade to Pro</button>
+                        <button class="settings-save-btn secondary" id="manage-billing-btn" type="button" disabled>Manage Billing</button>
+                    </div>
                 </div>
 
-                <div class="field-group" style="margin-top: 1rem;">
-                    <label class="field-label" for="settings-hf-token-input">
-                        Hugging Face Token
-                        <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" style="font-size: 0.75rem; color: var(--accent-purple); text-decoration: none;">Get Token</a>
-                    </label>
-                    <input type="password" class="input-text" id="settings-hf-token-input" placeholder="hf_...">
+                <div class="server-status-list">
+                    <div class="server-status-row">
+                        <span>OpenAI GPT Image</span>
+                        <strong id="status-openai">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Google Gemini / Nano Banana</span>
+                        <strong id="status-gemini">Checking...</strong>
+                    </div>
+                    <div class="server-status-row">
+                        <span>Hugging Face Inference Providers</span>
+                        <strong id="status-huggingface">Checking...</strong>
+                    </div>
                 </div>
 
-                <button class="settings-save-btn" id="save-settings-btn" style="margin-top: 1.5rem;">Save Configuration</button>
+                <button class="settings-save-btn" id="refresh-status-btn" style="margin-top: 1.5rem;">Refresh Status</button>
+            </div>
+        </section>
+
+        <!-- View 4: Admin Operations -->
+        <section class="view-section" id="admin-view">
+            <div class="admin-shell">
+                <div class="admin-header">
+                    <div>
+                        <h2 class="gallery-title">Admin Operations</h2>
+                        <p class="settings-intro">Review usage, failed jobs, reports, and local policy events with a server-configured admin token.</p>
+                    </div>
+                    <button class="settings-save-btn secondary admin-refresh-btn" id="admin-refresh-btn" type="button">Refresh</button>
+                </div>
+
+                <div class="admin-auth-card" id="admin-auth-card">
+                    <input type="password" class="input-text" id="admin-token-input" placeholder="Admin API token" autocomplete="off">
+                    <button class="settings-save-btn" id="admin-connect-btn" type="button">Connect Admin</button>
+                </div>
+
+                <div class="admin-dashboard" id="admin-dashboard" hidden>
+                    <div class="admin-metrics" id="admin-metrics"></div>
+
+                    <div class="admin-grid">
+                        <section class="admin-panel">
+                            <h3>Recent Jobs</h3>
+                            <div class="admin-list" id="admin-jobs-list"></div>
+                        </section>
+                        <section class="admin-panel">
+                            <h3>Abuse Reports</h3>
+                            <div class="admin-list" id="admin-reports-list"></div>
+                        </section>
+                        <section class="admin-panel wide">
+                            <h3>Policy Events</h3>
+                            <div class="admin-list" id="admin-policy-list"></div>
+                        </section>
+                    </div>
+                </div>
             </div>
         </section>
 

@@ -1,7 +1,8 @@
+import { reportAbuse } from './api.js';
 import { getCreations, deleteCreation } from './db.js';
 
 /**
- * Render all creations from IndexedDB into the gallery container
+ * Render all server-backed creations into the gallery container.
  * @param {HTMLElement} container 
  * @param {Function} onEditCreation Callback when reuse/edit button is clicked
  * @param {Function} showToast Helper to trigger toast notifications
@@ -19,7 +20,7 @@ export async function renderGallery(container, onEditCreation, showToast) {
                         <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
                     </svg>
                     <h3>No creations yet</h3>
-                    <p>Go to the Studio tab, enter your prompt, and let Nano Banana generate something awesome!</p>
+                    <p>Sign in, generate an image in the Studio tab, then save it to your account gallery.</p>
                 </div>
             `;
             return;
@@ -64,6 +65,9 @@ export async function renderGallery(container, onEditCreation, showToast) {
                                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
                                 Save
                             </button>
+                            <button class="gallery-card-btn report-btn" title="Report unsafe content">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V4s-1 1-4 1-5-2-8-2-4 1-4 1v17"/></svg>
+                            </button>
                             <button class="gallery-card-btn delete-btn delete" title="Delete creation">
                                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
                             </button>
@@ -78,8 +82,11 @@ export async function renderGallery(container, onEditCreation, showToast) {
 
         // Add event listeners
         container.querySelectorAll('.gallery-card').forEach(card => {
-            const id = Number(card.getAttribute('data-id'));
-            const creation = creations.find(item => item.id === id);
+            const id = card.getAttribute('data-id');
+            const creation = creations.find(item => String(item.id) === id);
+            if (!creation) {
+                return;
+            }
 
             // Edit Button
             card.querySelector('.edit-btn').addEventListener('click', () => {
@@ -107,6 +114,25 @@ export async function renderGallery(container, onEditCreation, showToast) {
                 showToast('Image download started', 'success');
             });
 
+            // Report Button
+            card.querySelector('.report-btn').addEventListener('click', async () => {
+                if (!confirm('Report this creation for review?')) {
+                    return;
+                }
+
+                try {
+                    await reportAbuse({
+                        targetType: 'gallery_item',
+                        targetId: id,
+                        reason: 'unsafe_content',
+                        details: 'Reported from the gallery card.'
+                    });
+                    showToast('Report submitted for review.', 'success');
+                } catch (err) {
+                    showToast('Report failed: ' + err.message, 'error');
+                }
+            });
+
             // Delete Button
             card.querySelector('.delete-btn').addEventListener('click', async () => {
                 if (confirm('Are you sure you want to delete this creation?')) {
@@ -123,7 +149,7 @@ export async function renderGallery(container, onEditCreation, showToast) {
         });
 
     } catch (err) {
-        container.innerHTML = `<div class="gallery-empty"><p>Error loading gallery: ${err.message}</p></div>`;
+        container.innerHTML = `<div class="gallery-empty"><p>Error loading gallery: ${escapeHTML(err.message)}</p></div>`;
     }
 }
 

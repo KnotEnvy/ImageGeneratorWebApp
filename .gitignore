@@ -1,5 +1,11 @@
 node_modules/
 dist/
+.data/
+.data-e2e/
+.data-*/
+test-results/
+playwright-report/
+blob-report/
 .DS_Store
 .env
 .env.local

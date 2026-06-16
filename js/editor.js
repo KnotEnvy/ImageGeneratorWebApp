@@ -52,7 +52,7 @@ export class CanvasEditor {
                     bgOpacity: 50
                 },
                 author: {
-                    text: '— Franklin D. Roosevelt',
+                    text: '- Franklin D. Roosevelt',
                     active: true,
                     yPct: 0.78,
                     fontFamily: 'Inter',
@@ -94,10 +94,14 @@ export class CanvasEditor {
      * @param {string|Image} imgSource 
      * @returns {Promise} Resolves when the image is loaded and drawn
      */
-    loadImage(imgSource) {
+    async loadImage(imgSource) {
+        const resolvedSource = await this.resolveImageSource(imgSource);
+
         return new Promise((resolve, reject) => {
             const img = new Image();
-            img.crossOrigin = 'anonymous';
+            if (typeof resolvedSource === 'string' && /^https?:\/\//.test(resolvedSource)) {
+                img.crossOrigin = 'anonymous';
+            }
             img.onload = () => {
                 this.backgroundImage = img;
                 // Set canvas internal resolution to match generated image (typically 1024x1024 or similar)
@@ -110,14 +114,27 @@ export class CanvasEditor {
                 reject(err);
             };
             
-            if (typeof imgSource === 'string') {
-                img.src = imgSource;
-            } else if (imgSource instanceof Image) {
-                img.src = imgSource.src;
+            if (typeof resolvedSource === 'string') {
+                img.src = resolvedSource;
+            } else if (resolvedSource instanceof Image) {
+                img.src = resolvedSource.src;
             } else {
                 reject(new Error('Invalid image source'));
             }
         });
+    }
+
+    async resolveImageSource(imgSource) {
+        if (typeof imgSource === 'string' && imgSource.startsWith('/api/assets/')) {
+            const response = await fetch(imgSource, { credentials: 'same-origin' });
+            if (!response.ok) {
+                throw new Error('Failed to load stored image asset.');
+            }
+            const blob = await response.blob();
+            return URL.createObjectURL(blob);
+        }
+
+        return imgSource;
     }
 
     /**
@@ -168,7 +185,7 @@ export class CanvasEditor {
         }
 
         // 3. Draw Text Overlays
-        for (const [key, overlay] of Object.entries(this.state.overlays)) {
+        for (const overlay of Object.values(this.state.overlays)) {
             if (!overlay.active || !overlay.text.trim()) continue;
             this.drawTextOverlay(overlay, width, height);
         }
