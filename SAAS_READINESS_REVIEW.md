@@ -1,13 +1,31 @@
 # SaaS Readiness Review And Implementation Handoff
 
 Date reviewed: 2026-06-11  
-Last updated: 2026-06-13 session 20
+Last updated: 2026-09-27 session 21
 
 ## Executive Summary
 
 This project has moved from a client-only image-generation prototype to an early SaaS-bound architecture. The browser no longer asks users for Gemini or Hugging Face keys, provider calls go through same-origin server routes in `server.js`, users can create local accounts, email verification/password reset flows exist with hashed single-use tokens and a Resend-capable delivery boundary, gallery assets are stored on the server under per-user ownership, local subscription/plan entitlements gate generation, Stripe checkout/webhook/customer-portal boundaries now exist behind server routes, admin/observability APIs exist behind a token, and the primary browser flow now has automated Playwright coverage. OpenAI `gpt-image-2`, current Gemini image models, and Hugging Face Inference Providers are represented as server-side adapters.
 
 The app is still not public-SaaS-ready. The next blockers are production auth/email validation, external database/object storage, real Redis/Stripe/object-storage validation, production observability, real provider integration tests, and deployment hardening. Treat the current editor UI as reusable product surface and `server.js` as the first backend boundary, not the final production backend.
+
+## Session 21 Progress (2026-09-27): Credits model and art studio rebuild
+
+Product direction changed to a consumer art studio with a free tier and paid credits. Changes:
+
+- Replaced monthly generation quotas and plan-gated models with credits:
+  - Accounts hold a plan allowance (`FREE_MONTHLY_CREDITS`, refilled monthly or granted once; `SUBSCRIPTION_MONTHLY_CREDITS` for subscribers) plus purchased credits that never expire.
+  - Engines cost credits per image (`DEFAULT_IMAGE_MODELS`, overridable with `IMAGE_MODELS` / `MODEL_CREDIT_COSTS`). Credits are reserved atomically with the job and refunded on failure or cancel.
+  - Durable `creditTransactions` ledger; admin summary reports credits spent and purchased.
+  - `POST /api/admin/credits` lets an admin grant credits to a tester.
+- Stripe: Checkout now sells one-time credit packs (`CREDIT_PACKS`, `mode: payment`) and the monthly subscription (`STRIPE_SUBSCRIPTION_PRICE_ID`, legacy `STRIPE_PRO_PRICE_ID` still read). Subscription credits are granted on `invoice.paid` (API `2026-05-27.dahlia` invoice shape: `parent.subscription_details`). Pack grants and invoice grants are idempotent. Promotion codes are enabled. A dev-only `POST /api/billing/mock-complete` exercises the paywall locally when `MOCK_STRIPE_RESPONSES=1`.
+- OpenAI defaults moved to `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst`, the models OpenAI's docs list as of 2026-09. Gemini requests use the documented `responseModalities: ['TEXT', 'IMAGE']`. Added 4:5, 2:3, and 3:2 shapes.
+- Provider errors no longer pass provider HTTP statuses to the browser (a bad server key used to return 401, which the UI could mistake for a signed-out session). Rate limits and safety blocks now get friendly messages.
+- Shared style library (`js/styles.js`, 31 styles) composes provider prompts server-side, with optional "leave room for text" composition hints. `npm run styles:previews` paints real preview thumbnails.
+- Rebuilt the browser app: guided Create panel, free-form layered text editor (drag, resize and rotate handles, snapping, 22 fonts, templates, effects, undo/redo), photo looks, paywall dialog, account page, My Art with editable designs (`PUT /api/gallery/:id`), phone layout, and dark mode.
+- Fixed: gallery saves were capped at 1 MB and would have failed for real images (now 40 MB); the old editor darkened, desaturated, blurred, and vignetted every export by default; dev mode served any repo file, including `server.js`, `package.json`, and a repo-local `.data/db.json` (now limited to the browser app).
+- Removed the GitHub Pages deploy scripts, which could only publish a frontend without its server. `npm audit fix` cleared three new advisories in dev tooling.
+- Verification: `npm run lint`, `npm test` (14 tests), `npm run test:e2e` (5 Chromium tests), `npm run build`, `npm audit` (0 vulnerabilities). Real provider and Stripe runs still need real keys.
 
 ## Session 1 Progress
 
@@ -885,5 +903,7 @@ Minimum fields for `generation_jobs`:
 - Project-level Playwright was used for rendered browser verification.
 
 ## Go / No-Go
+
+Update 2026-09-27: for a small private beta on one server, the remaining blockers are real-provider smoke runs with production keys, Stripe test-mode validation of packs and subscription, and hosting with a persistent disk (`ALLOW_LOCAL_PRODUCTION_STORAGE=1`). The items below still apply before a public launch.
 
 No-go for public SaaS until production auth/email validation or managed identity, real Stripe sandbox/live validation, external database/object storage, real Redis validation, deployment hardening, and approved real-provider smoke runs exist. The provider-secret blocker is resolved for this local architecture, auth/gallery/quota/local entitlements now exist for local testing, production mode now blocks several unsafe deploy configs, an S3-compatible asset-storage path exists, a local trust/safety flow exists, a Stripe billing route boundary exists, a Redis-capable rate-limit boundary exists, and a Resend-capable transactional email boundary exists, but the app still must not be publicly deployed as a paid SaaS in its current state.

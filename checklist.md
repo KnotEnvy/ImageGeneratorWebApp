@@ -1,8 +1,8 @@
 # Live Beta External Setup Checklist
 
-Last updated: 2026-06-13
+Last updated: 2026-09-27
 
-This checklist covers the work outside the coding environment needed to get Nano Banana Art Lab ready for first live beta testers. It assumes the current codebase state described in `SAAS_READINESS_REVIEW.md` session 19.
+This checklist covers the work outside the coding environment needed to get Nano Banana Art Studio ready for first live beta testers. It assumes the credits-based build described in `README.md` and `SAAS_READINESS_REVIEW.md` session 21.
 
 Important boundary: the app is now a backend SaaS, not a static GitHub Pages site. First live beta readiness requires a Node-capable deployment, production secrets, real provider smoke tests, real email delivery, real object storage, Redis, Stripe validation, and a production database adapter wired by the coder team. Do not invite live beta testers while the app still depends on `.data/db.json` for durable user data.
 
@@ -10,14 +10,16 @@ Important boundary: the app is now a backend SaaS, not a static GitHub Pages sit
 
 - [ ] Choose the beta URL, for example `https://beta.yourdomain.com`.
 - [ ] Choose the sending email subdomain, for example `updates.yourdomain.com` or `mail.yourdomain.com`.
-- [ ] Decide whether beta is free, paid, or invite-only.
+- [x] Business model: free monthly credits for everyone, then one-time credit packs or a monthly subscription.
 - [ ] Decide the required launch providers:
   - [ ] `openai`
   - [ ] `gemini`
   - [ ] `huggingface`
-- [ ] Decide the starting beta quota:
-  - [ ] `STARTER_MONTHLY_GENERATION_LIMIT`
-  - [ ] `PRO_MONTHLY_GENERATION_LIMIT`
+- [ ] Decide credit amounts and prices:
+  - [ ] `FREE_MONTHLY_CREDITS` and `FREE_CREDITS_REFRESH` (monthly refill or one-time)
+  - [ ] `SUBSCRIPTION_MONTHLY_CREDITS`, `SUBSCRIPTION_PLAN_LABEL`, `SUBSCRIPTION_PRICE_LABEL`
+  - [ ] Credit packs (`CREDIT_PACKS`: credits, price, label)
+  - [ ] Engine prices (`MODEL_CREDIT_COSTS`), checked against real provider costs
   - [ ] `API_RATE_LIMIT_PER_MINUTE`
   - [ ] `AUTH_RATE_LIMIT_PER_15_MINUTES`
   - [ ] `GENERATION_RATE_LIMIT_PER_HOUR`
@@ -144,8 +146,8 @@ Docs:
 EMAIL_VERIFICATION_REQUIRED=1
 ALLOW_UNVERIFIED_EMAILS=0
 EMAIL_DELIVERY_DRIVER=resend
-EMAIL_PRODUCT_NAME=Nano Banana Art Lab
-EMAIL_FROM=Nano Banana Art Lab <noreply@updates.yourdomain.com>
+EMAIL_PRODUCT_NAME=Nano Banana Art Studio
+EMAIL_FROM=Nano Banana Art Studio <noreply@updates.yourdomain.com>
 EMAIL_REPLY_TO=support@yourdomain.com
 RESEND_API_KEY=<resend api key>
 ALLOW_LOCAL_EMAIL_DELIVERY=0
@@ -158,17 +160,18 @@ Docs:
 
 ## 7. Stripe Billing Setup
 
-- [ ] Decide whether live beta testers will pay real money.
-- [ ] If beta is free, use Stripe test mode for validation but keep paid features disabled or couponed.
-- [ ] In Stripe test mode, create the Pro subscription product.
-- [ ] Create a recurring monthly Pro price.
-- [ ] Copy the test price ID as `STRIPE_PRO_PRICE_ID`.
-- [ ] Configure Customer Portal settings in Stripe.
+- [ ] Decide whether live beta testers will pay real money. Promotion codes work at checkout, so testers can be given free packs.
+- [ ] In Stripe test mode, create the subscription product with a recurring monthly price.
+- [ ] Copy the test price ID as `STRIPE_SUBSCRIPTION_PRICE_ID`.
+- [ ] Create one-time prices for each credit pack and put their IDs in `CREDIT_PACKS`.
+- [ ] Configure Customer Portal settings in Stripe (cancellation and invoice history).
 - [ ] Deploy the app to the beta URL before registering the webhook.
 - [ ] Register a Stripe webhook endpoint:
   - URL: `https://beta.yourdomain.com/api/billing/webhook`
 - [ ] Subscribe the webhook to the events the app currently handles:
   - [ ] `checkout.session.completed`
+  - [ ] `checkout.session.async_payment_succeeded`
+  - [ ] `invoice.paid`
   - [ ] `customer.subscription.created`
   - [ ] `customer.subscription.updated`
   - [ ] `customer.subscription.deleted`
@@ -181,17 +184,18 @@ BILLING_PROVIDER=stripe
 STRIPE_REQUIRED=1
 STRIPE_SECRET_KEY=<stripe secret key>
 STRIPE_WEBHOOK_SECRET=<stripe webhook signing secret>
-STRIPE_PRO_PRICE_ID=<stripe recurring price id>
+STRIPE_SUBSCRIPTION_PRICE_ID=<stripe recurring monthly price id>
+CREDIT_PACKS=[{"id":"small","label":"Handful","credits":100,"priceId":"<price id>","priceLabel":"$5"},{"id":"large","label":"Studio stack","credits":500,"priceId":"<price id>","priceLabel":"$20"}]
 APP_BASE_URL=https://beta.yourdomain.com
 STRIPE_BILLING_PORTAL_RETURN_URL=https://beta.yourdomain.com
 MOCK_STRIPE_RESPONSES=0
 ```
 
-- [ ] Run a full test-mode checkout.
-- [ ] Confirm the app upgrades the user to Pro after checkout.
-- [ ] Open the Customer Portal from the app.
-- [ ] Cancel or downgrade in the Customer Portal.
-- [ ] Confirm the app downgrades the user back to Starter after the webhook.
+- [ ] Buy a credit pack in test mode and confirm the credits appear (and are not granted twice if Stripe retries).
+- [ ] Subscribe in test mode and confirm the monthly allowance appears after `invoice.paid`.
+- [ ] Open the Customer Portal from the Account page.
+- [ ] Cancel in the Customer Portal.
+- [ ] Confirm the account returns to the Free plan after the webhook and keeps its purchased credits.
 - [ ] Only after test mode is clean, repeat the setup in live mode if beta testers will pay.
 
 Docs:
@@ -348,9 +352,13 @@ HF_TOKEN=<set if huggingface enabled>
 HF_INFERENCE_PROVIDER=auto
 REQUIRED_PROVIDERS=openai,gemini,huggingface
 
-# Plans and quotas
-STARTER_MONTHLY_GENERATION_LIMIT=25
-PRO_MONTHLY_GENERATION_LIMIT=500
+# Credits
+FREE_MONTHLY_CREDITS=20
+FREE_CREDITS_REFRESH=monthly
+SUBSCRIPTION_MONTHLY_CREDITS=400
+SUBSCRIPTION_PLAN_LABEL=Creator
+SUBSCRIPTION_PRICE_LABEL=$12/month
+CREDIT_PACKS=<json, see section 7>
 API_RATE_LIMIT_PER_MINUTE=180
 AUTH_RATE_LIMIT_PER_15_MINUTES=25
 GENERATION_RATE_LIMIT_PER_HOUR=30
@@ -360,8 +368,8 @@ EMAIL_VERIFICATION_REQUIRED=1
 ALLOW_UNVERIFIED_EMAILS=0
 AUTH_TOKEN_DEBUG=0
 EMAIL_DELIVERY_DRIVER=resend
-EMAIL_PRODUCT_NAME=Nano Banana Art Lab
-EMAIL_FROM=Nano Banana Art Lab <noreply@updates.yourdomain.com>
+EMAIL_PRODUCT_NAME=Nano Banana Art Studio
+EMAIL_FROM=Nano Banana Art Studio <noreply@updates.yourdomain.com>
 EMAIL_REPLY_TO=support@yourdomain.com
 RESEND_API_KEY=<set>
 ALLOW_LOCAL_EMAIL_DELIVERY=0
@@ -371,7 +379,7 @@ BILLING_PROVIDER=stripe
 STRIPE_REQUIRED=1
 STRIPE_SECRET_KEY=<set>
 STRIPE_WEBHOOK_SECRET=<set>
-STRIPE_PRO_PRICE_ID=<set>
+STRIPE_SUBSCRIPTION_PRICE_ID=<set>
 MOCK_STRIPE_RESPONSES=0
 
 # Object storage
@@ -491,8 +499,9 @@ npm run test:rate-limit
 
 - [ ] Run a real Resend verification email flow.
 - [ ] Run a real Resend password reset flow.
-- [ ] Run a Stripe test-mode checkout.
+- [ ] Run a Stripe test-mode credit pack purchase and a subscription checkout.
 - [ ] Run a Stripe test-mode customer portal cancellation.
+- [ ] Generate style preview thumbnails (`RUN_STYLE_PREVIEWS=1 npm run styles:previews`) and commit them.
 - [ ] Create a fresh beta user in a private browser window.
 - [ ] Verify email.
 - [ ] Generate one OpenAI image.
@@ -503,7 +512,7 @@ npm run test:rate-limit
 - [ ] Log in from a second browser/device.
 - [ ] Confirm the gallery item is still available.
 - [ ] Confirm the protected image URL is not available when signed out.
-- [ ] Confirm quota increases after generation.
+- [ ] Confirm the credit balance goes down after generation and is refunded after a canceled generation.
 - [ ] Confirm admin summary loads with the admin token.
 - [ ] Confirm support/feedback path works.
 

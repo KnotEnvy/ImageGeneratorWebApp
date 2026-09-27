@@ -1,1355 +1,931 @@
-import { initDB, saveCreation } from './js/db.js';
-import {
-    createBillingCheckoutSession,
-    createBillingPortalSession,
-    enhancePromptAPI,
-    generateImageAPI,
-    getAdminJobs,
-    getAdminPolicyEvents,
-    getAdminReports,
-    getAdminSummary,
-    getCurrentSession,
-    getProviderStatus,
-    login,
-    logout,
-    requestEmailVerification,
-    requestPasswordReset,
-    resetPassword,
-    signUp,
-    verifyEmail
-} from './js/api.js';
+import * as api from './js/api.js';
 import { CanvasEditor } from './js/editor.js';
-import { renderGallery } from './js/gallery.js';
+import { createGallery } from './js/gallery.js';
+import { DEFAULT_FILTERS, TEXT_PRESETS, designFromLegacy } from './js/presets.js';
+import { STYLE_CATEGORIES, STYLE_LIBRARY, TEXT_SPACE_OPTIONS, getStyleById, getStylePreviewBackground } from './js/styles.js';
+import { createAccount } from './js/ui/account.js';
+import { createAdjustPanel } from './js/ui/adjust-panel.js';
+import { createAdmin } from './js/ui/admin.js';
+import { createBilling } from './js/ui/billing.js';
+import { downloadBlob, formatDate, html, pluralize, raw, showToast, slugify } from './js/ui/dom.js';
+import { createTextPanel } from './js/ui/text-panel.js';
 
-// DOM Element Bindings
+const STORAGE_KEY = 'nb_studio_v2';
+
+const SHAPES = [
+    { id: '1:1', label: 'Square', note: 'Social post' },
+    { id: '4:5', label: 'Portrait', note: 'Instagram' },
+    { id: '2:3', label: 'Poster', note: 'Prints & cards' },
+    { id: '3:2', label: 'Landscape', note: 'Photo print' },
+    { id: '16:9', label: 'Wide', note: 'Screens' },
+    { id: '9:16', label: 'Story', note: 'Phone' }
+];
+
+const IDEAS = [
+    'A cozy cottage garden at dawn',
+    'Our golden retriever as a Renaissance king',
+    'A lighthouse on a stormy cliff',
+    'Wildflowers in a blue enamel pitcher',
+    'A tiny café on a rainy Paris street',
+    'Hot air balloons over autumn hills'
+];
+
+const LOADING_MESSAGES = [
+    'Mixing the paints…',
+    'Sketching the composition…',
+    'Laying down the first washes…',
+    'Adding light and shadow…',
+    'Working on the details…',
+    'Framing your masterpiece…'
+];
+
+const state = {
+    user: null,
+    billing: null,
+    models: [],
+    aspectRatios: SHAPES.map((shape) => shape.id),
+    providers: {},
+    freeMonthlyCredits: 0,
+    styleId: null,
+    category: 'all',
+    aspectRatio: '2:3',
+    modelId: null,
+    textSpace: 'none',
+    imageUrl: null,
+    galleryItemId: null,
+    lastGeneration: null,
+    generating: false,
+    abortController: null,
+    dirty: false,
+    activeTab: 'create',
+    activeView: 'create',
+    stylePreviews: new Set()
+};
+
+const $ = (selector) => document.querySelector(selector);
 const els = {
-    // Views
-    studioView: document.getElementById('studio-view'),
-    galleryView: document.getElementById('gallery-view'),
-    settingsView: document.getElementById('settings-view'),
-    adminView: document.getElementById('admin-view'),
-    
-    // Navigation Triggers
-    navStudio: document.getElementById('nav-studio'),
-    navGallery: document.getElementById('nav-gallery'),
-    navSettings: document.getElementById('nav-settings'),
-    navAdmin: document.getElementById('nav-admin'),
-    logoTrigger: document.getElementById('logo-trigger'),
-    apiKeyBadge: document.getElementById('api-key-badge'),
-    
-    // Tab controls
-    tabTriggers: document.querySelectorAll('.tab-trigger'),
-    tabContents: document.querySelectorAll('.panel-tab-content'),
-    
-    // Inputs: Generate Tab
-    promptInput: document.getElementById('prompt-input'),
-    enhancePromptBtn: document.getElementById('enhance-prompt-btn'),
-    stylePresets: document.getElementById('style-presets'),
-    aspectBtns: document.querySelectorAll('.aspect-btn'),
-    modelSelector: document.getElementById('model-selector'),
-    generateBtn: document.getElementById('generate-btn'),
-    
-    // Inputs: Typography Tab
-    headerActive: document.getElementById('header-active'),
-    headerText: document.getElementById('header-text-input'),
-    headerFont: document.getElementById('header-font'),
-    headerAlign: document.getElementById('header-align'),
-    headerSize: document.getElementById('header-size'),
-    headerSizeVal: document.getElementById('header-size-val'),
-    headerSpacing: document.getElementById('header-spacing'),
-    headerSpacingVal: document.getElementById('header-spacing-val'),
-    headerColorCustom: document.getElementById('header-color-custom'),
-
-    quoteActive: document.getElementById('quote-active'),
-    quoteText: document.getElementById('quote-text-input'),
-    quoteFont: document.getElementById('quote-font'),
-    quoteAlign: document.getElementById('quote-align'),
-    quoteSize: document.getElementById('quote-size'),
-    quoteSizeVal: document.getElementById('quote-size-val'),
-    quoteLineHeight: document.getElementById('quote-lineheight'),
-    quoteLineHeightVal: document.getElementById('quote-lineheight-val'),
-    quoteColorCustom: document.getElementById('quote-color-custom'),
-
-    authorActive: document.getElementById('author-active'),
-    authorText: document.getElementById('author-text-input'),
-    authorFont: document.getElementById('author-font'),
-    authorAlign: document.getElementById('author-align'),
-    authorSize: document.getElementById('author-size'),
-    authorSizeVal: document.getElementById('author-size-val'),
-    authorSpacing: document.getElementById('author-spacing'),
-    authorSpacingVal: document.getElementById('author-spacing-val'),
-    authorColorCustom: document.getElementById('author-color-custom'),
-    
-    // Inputs: Filters Tab
-    filterBrightness: document.getElementById('filter-brightness'),
-    filterBrightnessVal: document.getElementById('filter-brightness-val'),
-    filterContrast: document.getElementById('filter-contrast'),
-    filterContrastVal: document.getElementById('filter-contrast-val'),
-    filterSaturation: document.getElementById('filter-saturation'),
-    filterSaturationVal: document.getElementById('filter-saturation-val'),
-    filterBlur: document.getElementById('filter-blur'),
-    filterBlurVal: document.getElementById('filter-blur-val'),
-    filterVignette: document.getElementById('filter-vignette'),
-    filterVignetteVal: document.getElementById('filter-vignette-val'),
-    
-    // Server status tab
-    statusOpenAI: document.getElementById('status-openai'),
-    statusGemini: document.getElementById('status-gemini'),
-    statusHuggingFace: document.getElementById('status-huggingface'),
-    refreshStatusBtn: document.getElementById('refresh-status-btn'),
-    accountStatusText: document.getElementById('account-status-text'),
-    emailStatusText: document.getElementById('email-status-text'),
-    planStatusText: document.getElementById('plan-status-text'),
-    billingStatusText: document.getElementById('billing-status-text'),
-    quotaStatusText: document.getElementById('quota-status-text'),
-    authForm: document.getElementById('auth-form'),
-    authEmailInput: document.getElementById('auth-email-input'),
-    authPasswordInput: document.getElementById('auth-password-input'),
-    signInBtn: document.getElementById('sign-in-btn'),
-    signUpBtn: document.getElementById('sign-up-btn'),
-    signOutBtn: document.getElementById('sign-out-btn'),
-    sendVerificationBtn: document.getElementById('send-verification-btn'),
-    requestPasswordResetBtn: document.getElementById('request-password-reset-btn'),
-    resetPasswordPanel: document.getElementById('reset-password-panel'),
-    resetPasswordInput: document.getElementById('reset-password-input'),
-    resetPasswordSubmitBtn: document.getElementById('reset-password-submit-btn'),
-    billingActions: document.getElementById('billing-actions'),
-    upgradePlanBtn: document.getElementById('upgrade-plan-btn'),
-    manageBillingBtn: document.getElementById('manage-billing-btn'),
-
-    // Admin tab
-    adminTokenInput: document.getElementById('admin-token-input'),
-    adminConnectBtn: document.getElementById('admin-connect-btn'),
-    adminRefreshBtn: document.getElementById('admin-refresh-btn'),
-    adminDashboard: document.getElementById('admin-dashboard'),
-    adminMetrics: document.getElementById('admin-metrics'),
-    adminJobsList: document.getElementById('admin-jobs-list'),
-    adminReportsList: document.getElementById('admin-reports-list'),
-    adminPolicyList: document.getElementById('admin-policy-list'),
-    
-    // Workspace
-    editorPlaceholder: document.getElementById('editor-placeholder'),
-    canvasViewport: document.getElementById('canvas-viewport'),
-    mainCanvas: document.getElementById('main-canvas'),
-    dragHint: document.getElementById('drag-hint'),
-    
-    // Floating Actions
-    resetBtn: document.getElementById('reset-editor-btn'),
-    shareBtn: document.getElementById('share-canvas-btn'),
-    saveGalleryBtn: document.getElementById('save-gallery-btn'),
-    downloadBtn: document.getElementById('download-canvas-btn'),
-    
-    // Loading State Overlay
-    loadingOverlay: document.getElementById('loading-overlay'),
-    loadingText: document.getElementById('loading-status-text'),
-    cancelGenerationBtn: document.getElementById('cancel-generation-btn'),
-    toastContainer: document.getElementById('toast-container'),
-    galleryContainer: document.getElementById('gallery-container')
+    createView: $('#view-create'),
+    prompt: $('#prompt-input'),
+    improveBtn: $('#improve-btn'),
+    ideaRow: $('#idea-row'),
+    styleCategories: $('#style-categories'),
+    styleGrid: $('#style-grid'),
+    stylePicked: $('#style-picked'),
+    shapeRow: $('#shape-row'),
+    engineList: $('#engine-list'),
+    textSpace: $('#text-space'),
+    generateBtn: $('#generate-btn'),
+    generateLabel: $('#generate-label'),
+    generateCost: $('#generate-cost'),
+    footerNote: $('#footer-note'),
+    canvas: $('#main-canvas'),
+    stageEmpty: $('#stage-empty'),
+    stageLoading: $('#stage-loading'),
+    loadingMessage: $('#loading-message'),
+    loadingElapsed: $('#loading-elapsed'),
+    cancelBtn: $('#cancel-btn'),
+    stageToolbar: $('#stage-toolbar'),
+    stageHint: $('#stage-hint'),
+    undoBtn: $('#undo-btn'),
+    redoBtn: $('#redo-btn'),
+    addTextBtn: $('#add-text-btn'),
+    newImageBtn: $('#new-image-btn'),
+    shareBtn: $('#share-btn'),
+    downloadBtn: $('#download-btn'),
+    saveBtn: $('#save-btn'),
+    saveLabel: $('#save-label'),
+    creditsPill: $('#credits-pill'),
+    creditsCount: $('#credits-count'),
+    accountBtn: $('#account-btn')
 };
 
-// Global App State
-let selectedPreset = 'None';
-let selectedAspect = '1:1';
-let currentOriginalImageBase64 = null; // Stored to save session
-let providerStatus = { providers: {} };
-let currentUser = null;
-let generationAbortController = null;
-let adminToken = '';
-let pendingPasswordResetToken = '';
+const editor = new CanvasEditor(els.canvas);
 
-// Instantiate Editor
-const editor = new CanvasEditor(els.mainCanvas);
-
-// Bind drag end to auto-save session
-editor.onDragEnd = saveSessionToLocalStorage;
-
-// Initialize DB and application
-async function init() {
-    try {
-        await initDB();
-        bindUIEvents();
-        syncStateToUI(); // Initialize controls values to match editor defaults
-        await loadAccountSession({ silent: true });
-        await loadProviderStatus({ silent: true });
-        await handleAuthUrlActions();
-        
-        // Restore session if available
-        await restoreSessionFromLocalStorage();
-    } catch (err) {
-        showToast('IndexedDB Init Failed: ' + err.message, 'error');
-    }
-}
-
-// Update server-provider badge UI based on server-side configuration
-function updateApiKeyBadge() {
-    const configured = getConfiguredProviderLabels();
-    
-    if (configured.length > 0) {
-        els.apiKeyBadge.classList.add('valid');
-        setStatusBadge(`Server API: ${configured.join(' + ')}`);
-    } else {
-        els.apiKeyBadge.classList.remove('valid');
-        setStatusBadge('Server API Setup Required');
-    }
-}
-
-function setStatusBadge(text) {
-    const indicator = document.createElement('span');
-    indicator.className = 'indicator';
-    indicator.textContent = '*';
-    els.apiKeyBadge.replaceChildren(indicator, document.createTextNode(` ${text}`));
-}
-
-async function loadProviderStatus({ silent = false } = {}) {
-    try {
-        providerStatus = await getProviderStatus();
-        if (providerStatus.user || providerStatus.user === null) {
-            currentUser = providerStatus.user;
-        }
-    } catch (err) {
-        providerStatus = { providers: {} };
-        if (!silent) {
-            showToast('Failed to load server provider status: ' + err.message, 'error');
+const billing = createBilling({
+    dialog: $('#paywall-dialog'),
+    onCreditsChanged: (user, billingStatus) => {
+        if (user) {
+            setUser(user);
+        } else if (billingStatus && state.user) {
+            state.user = { ...state.user, credits: billingStatus.credits, plan: billingStatus.plan, planLabel: billingStatus.planLabel };
+            updateUserUI();
         }
     }
+});
+
+const account = createAccount({
+    authDialog: $('#auth-dialog'),
+    resetDialog: $('#reset-dialog'),
+    accountContainer: $('#account-container'),
+    onSession: (user) => setUser(user),
+    getContext: () => ({ user: state.user, billing: state.billing, freeMonthlyCredits: state.freeMonthlyCredits }),
+    openPaywall: () => billing.open(),
+    openPortal: () => billing.openPortal()
+});
+
+const gallery = createGallery({
+    container: $('#gallery-container'),
+    subtitle: $('#gallery-subtitle'),
+    onOpen: (item) => openGalleryItem(item),
+    isSignedIn: () => Boolean(state.user),
+    requestSignIn: () => account.open({ mode: 'login', then: () => gallery.render() })
+});
+
+const admin = createAdmin({ container: $('#admin-container') });
+
+const textPanel = createTextPanel({
+    container: $('#text-panel'),
+    editor,
+    getStyle: () => getStyleById(state.lastGeneration?.styleId ?? state.styleId),
+    getPlacement: () => state.lastGeneration?.textSpace || state.textSpace
+});
+createAdjustPanel({ container: $('#adjust-panel'), editor });
 
-    updateApiKeyBadge();
-    updateProviderStatusUI();
-    updateAccountUI();
-}
-
-async function loadAccountSession({ silent = false } = {}) {
-    try {
-        const session = await getCurrentSession();
-        currentUser = session.user || null;
-    } catch (err) {
-        currentUser = null;
-        if (!silent) {
-            showToast('Failed to load account session: ' + err.message, 'error');
-        }
-    }
-
-    updateAccountUI();
-}
-
-function updateAccountUI() {
-    if (!els.accountStatusText) return;
-
-    if (currentUser) {
-        els.accountStatusText.textContent = currentUser.email;
-        const quota = currentUser.quota;
-        const subscription = currentUser.subscription;
-        const planLabel = currentUser.entitlements?.planLabel || currentUser.plan || 'Starter';
-        const needsEmailVerification = currentUser.emailVerificationRequired && !currentUser.emailVerified;
-        els.planStatusText.textContent = planLabel;
-        if (els.emailStatusText) {
-            els.emailStatusText.textContent = currentUser.emailVerified
-                ? 'Verified'
-                : (currentUser.emailVerificationRequired ? 'Verification required' : 'Not verified');
-        }
-        els.billingStatusText.textContent = subscription
-            ? `${formatStatus(subscription.status)} (${subscription.billingProvider})`
-            : 'Local active';
-        els.quotaStatusText.textContent = quota
-            ? `${quota.monthlyUsed}/${quota.monthlyLimit} used`
-            : `${currentUser.monthlyGenerationLimit || 0} monthly limit`;
-        if (els.authForm) els.authForm.style.display = 'none';
-        if (els.signOutBtn) els.signOutBtn.style.display = 'block';
-        if (els.sendVerificationBtn) els.sendVerificationBtn.style.display = needsEmailVerification ? 'block' : 'none';
-        if (els.requestPasswordResetBtn) els.requestPasswordResetBtn.style.display = 'none';
-        if (els.billingActions) els.billingActions.style.display = 'grid';
-        if (els.upgradePlanBtn) {
-            const isPro = currentUser.entitlements?.plan === 'pro';
-            els.upgradePlanBtn.style.display = isPro ? 'none' : 'block';
-        }
-        if (els.manageBillingBtn) {
-            els.manageBillingBtn.disabled = !subscription?.billingCustomerId;
-        }
-    } else {
-        els.accountStatusText.textContent = 'Signed out';
-        if (els.emailStatusText) els.emailStatusText.textContent = 'Sign in required';
-        els.planStatusText.textContent = 'Sign in required';
-        els.billingStatusText.textContent = 'Sign in required';
-        els.quotaStatusText.textContent = 'Sign in to use generation';
-        if (els.authForm) els.authForm.style.display = 'grid';
-        if (els.signOutBtn) els.signOutBtn.style.display = 'none';
-        if (els.sendVerificationBtn) els.sendVerificationBtn.style.display = 'none';
-        if (els.requestPasswordResetBtn) els.requestPasswordResetBtn.style.display = 'block';
-        if (els.billingActions) els.billingActions.style.display = 'none';
-        if (els.upgradePlanBtn) els.upgradePlanBtn.style.display = 'block';
-        if (els.manageBillingBtn) els.manageBillingBtn.disabled = true;
-    }
-
-    updatePasswordResetUI();
-}
-
-function formatStatus(status) {
-    return String(status || 'active')
-        .split('_')
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ');
-}
-
-function updatePasswordResetUI() {
-    if (!els.resetPasswordPanel) return;
-    els.resetPasswordPanel.style.display = pendingPasswordResetToken ? 'grid' : 'none';
-}
-
-function readAuthForm() {
-    return {
-        email: els.authEmailInput.value.trim(),
-        password: els.authPasswordInput.value
-    };
-}
-
-async function handleAuthAction(action) {
-    const { email, password } = readAuthForm();
-    if (!email || !password) {
-        showToast('Email and password are required.', 'error');
-        return;
-    }
-
-    els.signInBtn.disabled = true;
-    els.signUpBtn.disabled = true;
-
-    try {
-        const result = action === 'signup'
-            ? await signUp(email, password)
-            : await login(email, password);
-        currentUser = result.user;
-        els.authPasswordInput.value = '';
-        updateAccountUI();
-        showToast(action === 'signup' ? 'Account created.' : 'Signed in.', 'success');
-        loadGallery();
-    } catch (err) {
-        showToast((action === 'signup' ? 'Sign up failed: ' : 'Sign in failed: ') + err.message, 'error');
-    } finally {
-        els.signInBtn.disabled = false;
-        els.signUpBtn.disabled = false;
-    }
-}
-
-async function handleSignOut() {
-    try {
-        await logout();
-        currentUser = null;
-        updateAccountUI();
-        loadGallery();
-        showToast('Signed out.', 'info');
-    } catch (err) {
-        showToast('Sign out failed: ' + err.message, 'error');
-    }
-}
-
-async function handleSendVerification() {
-    if (!requireSignedIn('request verification')) {
-        return;
-    }
-
-    els.sendVerificationBtn.disabled = true;
-    try {
-        await requestEmailVerification();
-        showToast('Verification link requested.', 'success');
-    } catch (err) {
-        showToast('Verification request failed: ' + err.message, 'error');
-    } finally {
-        els.sendVerificationBtn.disabled = false;
-    }
-}
-
-async function handleRequestPasswordReset() {
-    const email = els.authEmailInput?.value.trim();
-    if (!email) {
-        showToast('Enter your account email first.', 'error');
-        return;
-    }
-
-    els.requestPasswordResetBtn.disabled = true;
-    try {
-        await requestPasswordReset(email);
-        showToast('If an account exists, a reset link will be sent.', 'success');
-    } catch (err) {
-        showToast('Password reset request failed: ' + err.message, 'error');
-    } finally {
-        els.requestPasswordResetBtn.disabled = false;
-    }
-}
-
-async function handleResetPasswordSubmit() {
-    if (!pendingPasswordResetToken) {
-        showToast('Reset link is missing or expired.', 'error');
-        return;
-    }
-
-    const password = els.resetPasswordInput?.value || '';
-    if (!password) {
-        showToast('New password is required.', 'error');
-        return;
-    }
-
-    els.resetPasswordSubmitBtn.disabled = true;
-    try {
-        await resetPassword(pendingPasswordResetToken, password);
-        pendingPasswordResetToken = '';
-        if (els.resetPasswordInput) els.resetPasswordInput.value = '';
-        currentUser = null;
-        updateAccountUI();
-        showToast('Password updated. Sign in with the new password.', 'success');
-    } catch (err) {
-        showToast('Password reset failed: ' + err.message, 'error');
-    } finally {
-        els.resetPasswordSubmitBtn.disabled = false;
-    }
-}
-
-async function handleAuthUrlActions() {
-    const url = new URL(window.location.href);
-    const verifyToken = url.searchParams.get('verify_email');
-    const resetToken = url.searchParams.get('reset_password');
-
-    if (!verifyToken && !resetToken) {
-        return;
-    }
-
-    clearAuthUrlParams(url);
-    switchView('settings');
-
-    if (verifyToken) {
-        try {
-            const result = await verifyEmail(verifyToken);
-            if (result.user) {
-                currentUser = result.user;
-            }
-            await loadAccountSession({ silent: true });
-            showToast('Email verified.', 'success');
-        } catch (err) {
-            showToast('Email verification failed: ' + err.message, 'error');
-        }
-    }
-
-    if (resetToken) {
-        pendingPasswordResetToken = resetToken;
-        updatePasswordResetUI();
-        showToast('Enter a new password to finish reset.', 'info');
-    }
-}
-
-function clearAuthUrlParams(url) {
-    url.searchParams.delete('verify_email');
-    url.searchParams.delete('reset_password');
-    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
-}
-
-async function handleUpgradePlan() {
-    if (!requireSignedIn('upgrade your plan')) {
-        return;
-    }
-
-    els.upgradePlanBtn.disabled = true;
-    try {
-        const checkout = await createBillingCheckoutSession();
-        window.location.href = checkout.url;
-    } catch (err) {
-        showToast('Checkout failed: ' + err.message, 'error');
-    } finally {
-        els.upgradePlanBtn.disabled = false;
-    }
-}
-
-async function handleManageBilling() {
-    if (!requireSignedIn('manage billing')) {
-        return;
-    }
-
-    els.manageBillingBtn.disabled = true;
-    try {
-        const portal = await createBillingPortalSession();
-        window.location.href = portal.url;
-    } catch (err) {
-        showToast('Billing portal failed: ' + err.message, 'error');
-        updateAccountUI();
-    }
-}
-
-function requireSignedIn(actionName) {
-    if (currentUser) {
-        return true;
-    }
-
-    showToast(`Sign in before you ${actionName}.`, 'error');
-    switchView('settings');
-    return false;
-}
-
-function updateProviderStatusUI() {
-    setProviderStatusText(els.statusOpenAI, 'openai');
-    setProviderStatusText(els.statusGemini, 'gemini');
-    setProviderStatusText(els.statusHuggingFace, 'huggingface');
-}
-
-function setProviderStatusText(element, provider) {
-    if (!element) return;
-    const configured = isProviderConfigured(provider);
-    element.textContent = configured ? 'Ready' : 'Missing server key';
-    element.classList.toggle('status-ok', configured);
-    element.classList.toggle('status-missing', !configured);
-}
-
-function getConfiguredProviderLabels() {
-    const labels = [];
-    if (isProviderConfigured('openai')) labels.push('OpenAI');
-    if (isProviderConfigured('gemini')) labels.push('Gemini');
-    if (isProviderConfigured('huggingface')) labels.push('HF');
-    return labels;
-}
-
-function isProviderConfigured(provider) {
-    return Boolean(providerStatus.providers?.[provider]?.configured);
-}
-
-function getProviderForModel(model) {
-    if (model.startsWith('gpt-image')) return 'openai';
-    if (model.startsWith('gemini')) return 'gemini';
-    return 'huggingface';
-}
-
-function getProviderLabel(provider) {
-    return providerStatus.providers?.[provider]?.label || provider;
-}
-
-// Change Active App Tab (Studio, Gallery, Setup)
-function switchView(viewName) {
-    // Nav buttons active classes
-    els.navStudio.classList.remove('active');
-    els.navGallery.classList.remove('active');
-    els.navSettings.classList.remove('active');
-    els.navAdmin.classList.remove('active');
-    
-    // Hide all
-    els.studioView.classList.remove('active');
-    els.galleryView.classList.remove('active');
-    els.settingsView.classList.remove('active');
-    els.adminView.classList.remove('active');
-
-    if (viewName === 'studio') {
-        els.navStudio.classList.add('active');
-        els.studioView.classList.add('active');
-        if (editor.backgroundImage) {
-            // Trigger redraw on show to avoid layout squishing
-            editor.draw();
-        }
-    } else if (viewName === 'gallery') {
-        els.navGallery.classList.add('active');
-        els.galleryView.classList.add('active');
-        loadGallery();
-    } else if (viewName === 'settings') {
-        els.navSettings.classList.add('active');
-        els.settingsView.classList.add('active');
-        loadProviderStatus();
-    } else if (viewName === 'admin') {
-        els.navAdmin.classList.add('active');
-        els.adminView.classList.add('active');
-        if (adminToken) {
-            loadAdminDashboard();
-        }
-    }
-}
-
-// Trigger creations list render
-function loadGallery() {
-    renderGallery(els.galleryContainer, handleEditCreation, showToast);
-}
-
-async function loadAdminDashboard() {
-    if (!adminToken) {
-        showToast('Enter an admin token first.', 'error');
-        return;
-    }
-
-    setAdminLoading(true);
-    try {
-        const [summary, jobs, reports, policyEvents] = await Promise.all([
-            getAdminSummary(adminToken),
-            getAdminJobs(adminToken),
-            getAdminReports(adminToken),
-            getAdminPolicyEvents(adminToken)
-        ]);
-
-        els.adminDashboard.hidden = false;
-        renderAdminMetrics(summary);
-        renderAdminJobs(jobs);
-        renderAdminReports(reports);
-        renderAdminPolicyEvents(policyEvents);
-        showToast('Admin dashboard refreshed.', 'success');
-    } catch (err) {
-        els.adminDashboard.hidden = true;
-        showToast('Admin dashboard failed: ' + err.message, 'error');
-    } finally {
-        setAdminLoading(false);
-    }
-}
-
-function setAdminLoading(loading) {
-    els.adminConnectBtn.disabled = loading;
-    els.adminRefreshBtn.disabled = loading || !adminToken;
-    els.adminRefreshBtn.textContent = loading ? 'Refreshing...' : 'Refresh';
-}
-
-function renderAdminMetrics(summary) {
-    const totals = summary?.totals || {};
-    const usage = summary?.usage || {};
-    const policy = summary?.contentPolicy || {};
-    const reports = summary?.abuseReports || {};
-    const metrics = [
-        ['Users', totals.users ?? 0],
-        ['Jobs', totals.generationJobs ?? 0],
-        ['Usage Events', usage.totalEvents ?? 0],
-        ['Assets', totals.imageAssets ?? 0],
-        ['Policy Events', totals.contentPolicyEvents ?? 0],
-        ['Open Reports', reports.byStatus?.open ?? 0],
-        ['Completed Jobs', summary?.jobsByStatus?.completed ?? 0],
-        ['Blocked Codes', Object.keys(policy.byCode || {}).length]
-    ];
-
-    els.adminMetrics.replaceChildren(...metrics.map(([label, value]) => {
-        const card = document.createElement('div');
-        card.className = 'admin-metric-card';
-        const valueEl = document.createElement('strong');
-        valueEl.textContent = String(value);
-        const labelEl = document.createElement('span');
-        labelEl.textContent = label;
-        card.replaceChildren(valueEl, labelEl);
-        return card;
-    }));
-}
-
-function renderAdminJobs(jobs) {
-    renderAdminList(els.adminJobsList, jobs, (job) => [
-        ['Status', job.status],
-        ['Model', job.model],
-        ['Plan', job.plan || 'none'],
-        ['Error', job.errorCode || 'none']
-    ], 'No jobs yet.');
-}
-
-function renderAdminReports(reports) {
-    renderAdminList(els.adminReportsList, reports, (report) => [
-        ['Status', report.status],
-        ['Reason', report.reason],
-        ['Target', `${report.targetType}:${report.targetId || 'none'}`],
-        ['Details', report.details || 'none']
-    ], 'No abuse reports.');
-}
-
-function renderAdminPolicyEvents(events) {
-    renderAdminList(els.adminPolicyList, events, (event) => [
-        ['Surface', event.surface],
-        ['Code', event.policyCode],
-        ['Tags', (event.tags || []).join(', ') || 'none'],
-        ['Excerpt', event.textExcerpt || 'none']
-    ], 'No policy events.');
-}
-
-function renderAdminList(container, items, getRows, emptyText) {
-    container.replaceChildren();
-    if (!items.length) {
-        const empty = document.createElement('p');
-        empty.className = 'admin-empty';
-        empty.textContent = emptyText;
-        container.appendChild(empty);
-        return;
-    }
-
-    for (const item of items) {
-        const entry = document.createElement('article');
-        entry.className = 'admin-list-item';
-
-        const header = document.createElement('div');
-        header.className = 'admin-list-heading';
-        const idEl = document.createElement('strong');
-        idEl.textContent = item.id || 'record';
-        const dateEl = document.createElement('span');
-        dateEl.textContent = formatAdminDate(item.createdAt || item.updatedAt);
-        header.replaceChildren(idEl, dateEl);
-
-        const rows = document.createElement('dl');
-        for (const [label, value] of getRows(item)) {
-            const dt = document.createElement('dt');
-            dt.textContent = label;
-            const dd = document.createElement('dd');
-            dd.textContent = String(value ?? 'none');
-            rows.append(dt, dd);
-        }
-
-        entry.replaceChildren(header, rows);
-        container.appendChild(entry);
-    }
-}
-
-function formatAdminDate(value) {
-    if (!value) return 'unknown';
-    return new Date(value).toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-}
-
-// Edit a saved creation callback from gallery
-async function handleEditCreation(creation) {
-    showToast('Loading creation to workspace...', 'info');
-    switchView('studio');
-    
-    // Show loader
-    toggleLoading(true, 'Reconstructing Art Layers...');
-    
-    try {
-        // Load the original image first
-        currentOriginalImageBase64 = creation.originalImage;
-        await editor.loadImage(creation.originalImage);
-        
-        // Restore overlay and filters coordinates
-        editor.state.overlays = JSON.parse(JSON.stringify(creation.overlays));
-        editor.state.filters = JSON.parse(JSON.stringify(creation.filters));
-        
-        // Sync UI inputs to match this state
-        syncStateToUI();
-        
-        // Draw editor canvas
-        editor.draw();
-        
-        // Swap placeholders
-        els.editorPlaceholder.style.display = 'none';
-        els.canvasViewport.style.display = 'block';
-        els.dragHint.style.display = 'flex';
-        
-        // Save restored state to active session
-        saveSessionToLocalStorage();
-        
-        showToast('Layers loaded. You can adjust text, drag layers, or add filters.', 'success');
-    } catch (err) {
-        showToast('Failed to reload canvas: ' + err.message, 'error');
-    } finally {
-        toggleLoading(false);
-    }
-}
-
-// Toggle loading overlay in Editor
-function toggleLoading(show, message = 'Processing...', options = {}) {
-    if (show) {
-        els.loadingText.textContent = message;
-        els.loadingOverlay.classList.add('active');
-        if (els.cancelGenerationBtn) {
-            els.cancelGenerationBtn.style.display = options.cancellable ? 'inline-flex' : 'none';
-            els.cancelGenerationBtn.disabled = Boolean(options.canceling);
-        }
-    } else {
-        els.loadingOverlay.classList.remove('active');
-        if (els.cancelGenerationBtn) {
-            els.cancelGenerationBtn.style.display = 'none';
-        }
-    }
-}
-
-// Style Preset text appends
-const styleAppends = {
-    'None': '',
-    'Cyberpunk Neon': ', cyberpunk art style, glowing vibrant ultraviolet and cyan neon lighting, futuristic cables, high contrast reflections',
-    'Surrealist Dream': ', surrealist oil painting, whimsical structures, floating abstract elements, soft volumetric dream atmosphere',
-    'Vintage Retro Poster': ', vintage print style, warm sepia tones, distressed paper texture, halftone grain, classic retro poster illustration',
-    'Minimalist 3D Glass': ', frosted glassmorphism render, 3d minimal shape, smooth aesthetic textures, light pastel gradient backdrop, studio light',
-    'Moody Dark Editorial': ', moody low-key editorial photo, dramatic chiaroscuro lighting, deep shadows, rich atmospheric contrast'
-};
-
-// Auto-Save workspace state to localStorage
-function saveSessionToLocalStorage() {
-    const sessionState = {
-        prompt: els.promptInput.value.trim(),
-        selectedPreset: selectedPreset,
-        selectedAspect: selectedAspect,
-        modelSelector: els.modelSelector.value,
-        backgroundImage: currentOriginalImageBase64,
-        overlays: editor.state.overlays,
-        filters: editor.state.filters
-    };
-    try {
-        localStorage.setItem('nano_banana_session', JSON.stringify(sessionState));
-    } catch (err) {
-        console.warn('Failed to save session to localStorage:', err);
-    }
-}
-
-// Auto-Restore workspace state from localStorage
-async function restoreSessionFromLocalStorage() {
-    try {
-        const stored = localStorage.getItem('nano_banana_session');
-        if (!stored) return;
-        
-        const sessionState = JSON.parse(stored);
-        if (!sessionState) return;
-
-        // Restore prompt
-        if (sessionState.prompt) {
-            els.promptInput.value = sessionState.prompt;
-        }
-
-        // Restore style preset
-        if (sessionState.selectedPreset) {
-            selectedPreset = sessionState.selectedPreset;
-            els.stylePresets.querySelectorAll('.preset-card').forEach(card => {
-                if (card.getAttribute('data-preset') === selectedPreset) {
-                    card.classList.add('active');
-                } else {
-                    card.classList.remove('active');
-                }
-            });
-        }
-
-        // Restore aspect ratio
-        if (sessionState.selectedAspect) {
-            selectedAspect = sessionState.selectedAspect;
-            els.aspectBtns.forEach(btn => {
-                if (btn.getAttribute('data-aspect') === selectedAspect) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-            });
-        }
-
-        // Restore model selector
-        if (sessionState.modelSelector) {
-            els.modelSelector.value = sessionState.modelSelector;
-        }
-
-        // Restore background image & draw
-        if (sessionState.backgroundImage) {
-            currentOriginalImageBase64 = sessionState.backgroundImage;
-            toggleLoading(true, 'Restoring session layers...');
-            await editor.loadImage(sessionState.backgroundImage);
-            
-            if (sessionState.overlays) {
-                editor.state.overlays = JSON.parse(JSON.stringify(sessionState.overlays));
-            }
-            if (sessionState.filters) {
-                editor.state.filters = JSON.parse(JSON.stringify(sessionState.filters));
-            }
-            
-            syncStateToUI();
-            editor.draw();
-
-            // Swap placeholders
-            els.editorPlaceholder.style.display = 'none';
-            els.canvasViewport.style.display = 'block';
-            els.dragHint.style.display = 'flex';
-        }
-    } catch (err) {
-        console.error('Failed to restore session:', err);
-    } finally {
-        toggleLoading(false);
-    }
-}
-
-// Bind DOM event listeners
-function bindUIEvents() {
-    // Nav links
-    els.navStudio.addEventListener('click', () => switchView('studio'));
-    els.navGallery.addEventListener('click', () => switchView('gallery'));
-    els.navSettings.addEventListener('click', () => switchView('settings'));
-    els.navAdmin.addEventListener('click', () => switchView('admin'));
-    els.logoTrigger.addEventListener('click', () => switchView('studio'));
-    els.apiKeyBadge.addEventListener('click', () => switchView('settings'));
-
-    // Control Panel tabs switching
-    els.tabTriggers.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const targetTab = btn.getAttribute('data-tab');
-            
-            // Toggle triggers active
-            els.tabTriggers.forEach(t => t.classList.remove('active'));
-            btn.classList.add('active');
-
-            // Toggle contents active
-            els.tabContents.forEach(c => {
-                c.classList.remove('active');
-                if (c.id === targetTab) c.classList.add('active');
-            });
-        });
-    });
-
-    // Style presets selector
-    els.stylePresets.querySelectorAll('.preset-card').forEach(card => {
-        card.addEventListener('click', () => {
-            els.stylePresets.querySelectorAll('.preset-card').forEach(c => c.classList.remove('active'));
-            card.classList.add('active');
-            selectedPreset = card.getAttribute('data-preset');
-            showToast(`Style set: ${selectedPreset}`, 'info');
-            saveSessionToLocalStorage();
-        });
-    });
-
-    // Aspect selectors
-    els.aspectBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            els.aspectBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            selectedAspect = btn.getAttribute('data-aspect');
-            saveSessionToLocalStorage();
-        });
-    });
-
-    // Model Selector change handler
-    els.modelSelector.addEventListener('change', () => {
-        saveSessionToLocalStorage();
-    });
-
-    if (els.refreshStatusBtn) {
-        els.refreshStatusBtn.addEventListener('click', () => loadProviderStatus());
-    }
-
-    if (els.signInBtn) {
-        els.signInBtn.addEventListener('click', () => handleAuthAction('login'));
-    }
-    if (els.signUpBtn) {
-        els.signUpBtn.addEventListener('click', () => handleAuthAction('signup'));
-    }
-    if (els.signOutBtn) {
-        els.signOutBtn.addEventListener('click', handleSignOut);
-    }
-    if (els.sendVerificationBtn) {
-        els.sendVerificationBtn.addEventListener('click', handleSendVerification);
-    }
-    if (els.requestPasswordResetBtn) {
-        els.requestPasswordResetBtn.addEventListener('click', handleRequestPasswordReset);
-    }
-    if (els.resetPasswordSubmitBtn) {
-        els.resetPasswordSubmitBtn.addEventListener('click', handleResetPasswordSubmit);
-    }
-    if (els.upgradePlanBtn) {
-        els.upgradePlanBtn.addEventListener('click', handleUpgradePlan);
-    }
-    if (els.manageBillingBtn) {
-        els.manageBillingBtn.addEventListener('click', handleManageBilling);
-    }
-    if (els.adminConnectBtn) {
-        els.adminConnectBtn.addEventListener('click', () => {
-            adminToken = els.adminTokenInput.value.trim();
-            if (!adminToken) {
-                showToast('Admin token is required.', 'error');
-                return;
-            }
-            els.adminTokenInput.value = '';
-            loadAdminDashboard();
-        });
-    }
-    if (els.adminRefreshBtn) {
-        els.adminRefreshBtn.addEventListener('click', loadAdminDashboard);
-    }
-
-    // Prompt input listener
-    els.promptInput.addEventListener('input', () => {
-        saveSessionToLocalStorage();
-    });
-
-    // AI Enhance button
-    els.enhancePromptBtn.addEventListener('click', async () => {
-        const prompt = els.promptInput.value.trim();
-        if (!prompt) {
-            showToast('Please type a base prompt first.', 'error');
-            return;
-        }
-        if (!requireSignedIn('enhance prompts')) {
-            return;
-        }
-        if (!isProviderConfigured('gemini')) {
-            showToast('Gemini is not configured on the server. Open Server Status for setup.', 'error');
-            switchView('settings');
-            return;
-        }
-
-        els.enhancePromptBtn.disabled = true;
-        showToast('Gemini is enhancing prompt layout...', 'info');
-
-        try {
-            const enhanced = await enhancePromptAPI(prompt, selectedPreset);
-            els.promptInput.value = enhanced;
-            saveSessionToLocalStorage();
-            showToast('Prompt enhanced with rich style parameters!', 'success');
-        } catch (err) {
-            showToast('Enhancer failed: ' + err.message, 'error');
-        } finally {
-            els.enhancePromptBtn.disabled = false;
-        }
-    });
-
-    // Main Synthesize button
-    els.generateBtn.addEventListener('click', async () => {
-        const rawPrompt = els.promptInput.value.trim();
-        if (!rawPrompt) {
-            showToast('Please enter a creative prompt first.', 'error');
-            return;
-        }
-        if (!requireSignedIn('generate images')) {
-            return;
-        }
-
-        const model = els.modelSelector.value;
-        const provider = getProviderForModel(model);
-
-        if (!isProviderConfigured(provider)) {
-            showToast(`${getProviderLabel(provider)} is not configured on the server. Open Server Status for setup.`, 'error');
-            switchView('settings');
-            return;
-        }
-
-        els.generateBtn.disabled = true;
-        generationAbortController = new AbortController();
-        toggleLoading(true, 'Synthesizing creative prompt...', { cancellable: true });
-        
-        try {
-            const stylePrompt = rawPrompt + (styleAppends[selectedPreset] || '');
-
-            toggleLoading(true, `Connecting to ${getProviderLabel(provider)}...`, { cancellable: true });
-            const base64Url = await generateImageAPI({
-                provider,
-                model,
-                prompt: stylePrompt,
-                aspectRatio: selectedAspect,
-                quality: 'medium',
-                outputFormat: 'png',
-                signal: generationAbortController.signal
-            });
-            
-            toggleLoading(true, 'Initializing Canvas Layers...');
-            currentOriginalImageBase64 = base64Url;
-            await editor.loadImage(base64Url);
-
-            // Swap viewport and show tips
-            els.editorPlaceholder.style.display = 'none';
-            els.canvasViewport.style.display = 'block';
-            els.dragHint.style.display = 'flex';
-            
-            // Save state immediately
-            saveSessionToLocalStorage();
-            
-            showToast('Image generated successfully! Drag text overlay layers to customize.', 'success');
-            await loadAccountSession({ silent: true });
-        } catch (err) {
-            if (err.name === 'AbortError' || err.code === 'generation_aborted') {
-                showToast('Generation canceled.', 'info');
-            } else {
-                showToast('Generation failed: ' + err.message, 'error');
-            }
-        } finally {
-            generationAbortController = null;
-            els.generateBtn.disabled = false;
-            toggleLoading(false);
-        }
-    });
-
-    if (els.cancelGenerationBtn) {
-        els.cancelGenerationBtn.addEventListener('click', () => {
-            if (generationAbortController) {
-                generationAbortController.abort();
-                toggleLoading(true, 'Canceling generation...', { cancellable: true, canceling: true });
-            }
-        });
-    }
-
-    // Typography live bindings helper
-    const bindTextControl = (key, textEl, fontEl, alignEl, sizeEl, sizeValEl, spacingOrLHSlider, spacingOrLHVal, activeEl, colorCustomEl) => {
-        // Query outline and background controls dynamically
-        const outlineActiveEl = document.getElementById(`${key}-outline-active`);
-        const outlineColorEl = document.getElementById(`${key}-outline-color`);
-        const outlineWidthEl = document.getElementById(`${key}-outline-width`);
-        const bgActiveEl = document.getElementById(`${key}-bg-active`);
-        const bgColorEl = document.getElementById(`${key}-bg-color`);
-        const bgOpacityEl = document.getElementById(`${key}-bg-opacity`);
-
-        const update = () => {
-            const size = Number(sizeEl.value);
-            sizeValEl.textContent = size + 'px';
-            
-            const extraVal = Number(spacingOrLHSlider.value);
-            if (key === 'quote') {
-                spacingOrLHVal.textContent = (extraVal / 10).toFixed(1);
-            } else {
-                spacingOrLHVal.textContent = extraVal + 'px';
-            }
-
-            editor.updateOverlay(key, {
-                text: textEl.value,
-                fontFamily: fontEl.value,
-                alignment: alignEl.value,
-                fontSize: size,
-                letterSpacing: key !== 'quote' ? extraVal : 0,
-                lineHeight: key === 'quote' ? extraVal / 10 : 1.2,
-                active: activeEl.checked,
-                outlineActive: outlineActiveEl ? outlineActiveEl.checked : false,
-                outlineColor: outlineColorEl ? outlineColorEl.value : '#000000',
-                outlineWidth: outlineWidthEl ? Number(outlineWidthEl.value) : 3,
-                bgActive: bgActiveEl ? bgActiveEl.checked : false,
-                bgColor: bgColorEl ? bgColorEl.value : '#000000',
-                bgOpacity: bgOpacityEl ? Number(bgOpacityEl.value) : 50
-            });
-            saveSessionToLocalStorage();
-        };
-
-        textEl.addEventListener('input', update);
-        fontEl.addEventListener('change', update);
-        alignEl.addEventListener('change', update);
-        sizeEl.addEventListener('input', update);
-        spacingOrLHSlider.addEventListener('input', update);
-        activeEl.addEventListener('change', update);
-
-        if (outlineActiveEl) outlineActiveEl.addEventListener('change', update);
-        if (outlineColorEl) outlineColorEl.addEventListener('input', update);
-        if (outlineWidthEl) outlineWidthEl.addEventListener('input', update);
-        if (bgActiveEl) bgActiveEl.addEventListener('change', update);
-        if (bgColorEl) bgColorEl.addEventListener('input', update);
-        if (bgOpacityEl) bgOpacityEl.addEventListener('input', update);
-
-        // Color swatches clicks inside container
-        const swatchesContainer = colorCustomEl.closest('.field-group').querySelector('.color-picker-container');
-        if (swatchesContainer) {
-            swatchesContainer.querySelectorAll('.color-swatch').forEach(swatch => {
-                swatch.addEventListener('click', () => {
-                    swatchesContainer.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-                    swatch.classList.add('active');
-                    const color = swatch.getAttribute('data-color');
-                    editor.updateOverlay(key, { color: color });
-                    saveSessionToLocalStorage();
-                });
-            });
-        }
-
-        // Custom color picker input
-        colorCustomEl.addEventListener('input', (e) => {
-            const color = e.target.value;
-            // De-activate pre-defined swatches
-            if (swatchesContainer) {
-                swatchesContainer.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-            }
-            editor.updateOverlay(key, { color: color });
-            saveSessionToLocalStorage();
-        });
-    };
-
-    // Header Controls
-    bindTextControl('header', els.headerText, els.headerFont, els.headerAlign, els.headerSize, els.headerSizeVal, els.headerSpacing, els.headerSpacingVal, els.headerActive, els.headerColorCustom);
-    
-    // Quote Controls
-    bindTextControl('quote', els.quoteText, els.quoteFont, els.quoteAlign, els.quoteSize, els.quoteSizeVal, els.quoteLineHeight, els.quoteLineHeightVal, els.quoteActive, els.quoteColorCustom);
-    
-    // Author Controls
-    // Using a mock slider to fit the binding helper pattern, passing header spacing placeholder
-    bindTextControl('author', els.authorText, els.authorFont, els.authorAlign, els.authorSize, els.authorSizeVal, els.authorSpacing, els.authorSpacingVal, els.authorActive, els.authorColorCustom);
-
-    // Filters sliders bindings
-    const bindFilterSlider = (el, valEl, key, scale = 1) => {
-        el.addEventListener('input', () => {
-            const val = Number(el.value);
-            valEl.textContent = val + (key === 'blur' ? 'px' : key === 'vignette' ? '%' : '%');
-            editor.updateFilter(key, val / scale);
-            saveSessionToLocalStorage();
-        });
-    };
-
-    bindFilterSlider(els.filterBrightness, els.filterBrightnessVal, 'brightness');
-    bindFilterSlider(els.filterContrast, els.filterContrastVal, 'contrast');
-    bindFilterSlider(els.filterSaturation, els.filterSaturationVal, 'saturation');
-    bindFilterSlider(els.filterBlur, els.filterBlurVal, 'blur');
-    bindFilterSlider(els.filterVignette, els.filterVignetteVal, 'vignette', 100);
-
-    // Canvas Floating Button Actions
-    els.resetBtn.addEventListener('click', () => {
-        editor.reset();
-        syncStateToUI();
-        saveSessionToLocalStorage();
-        showToast('Positions and filters reset.', 'info');
-    });
-
-    els.downloadBtn.addEventListener('click', () => {
-        const dataUrl = editor.exportPNG();
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = `nano-banana-art-${Date.now()}.png`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        showToast('Export PNG started', 'success');
-    });
-
-    els.shareBtn.addEventListener('click', async () => {
-        showToast('Composing share blob...', 'info');
-        const dataUrl = editor.exportPNG();
-        
-        try {
-            const response = await fetch(dataUrl);
-            const blob = await response.blob();
-            
-            if (navigator.canShare && navigator.share) {
-                const file = new File([blob], 'nano-banana-poster.png', { type: blob.type });
-                if (navigator.canShare({ files: [file] })) {
-                    await navigator.share({
-                        files: [file],
-                        title: 'Nano Banana Creative Motivational Art',
-                        text: `Check out this poster I designed using Nano Banana models!`
-                    });
-                    showToast('Shared successfully!', 'success');
-                    return;
-                }
-            }
-            
-            // Clipboard Fallback
-            await navigator.clipboard.write([
-                new ClipboardItem({ [blob.type]: blob })
-            ]);
-            showToast('Image copied to clipboard! Paste it anywhere to share.', 'success');
-        } catch (err) {
-            showToast('Share failed: ' + err.message, 'error');
-        }
-    });
-
-    els.saveGalleryBtn.addEventListener('click', async () => {
-        if (!currentOriginalImageBase64) return;
-        if (!requireSignedIn('save to the gallery')) {
-            return;
-        }
-        
-        showToast('Saving to gallery database...', 'info');
-        toggleLoading(true, 'Recording digital brush strokes...');
-
-        const finalImage = editor.exportPNG();
-
-        const item = {
-            originalImage: currentOriginalImageBase64,
-            finalImage: finalImage,
-            prompt: els.promptInput.value.trim(),
-            stylePreset: selectedPreset,
-            modelUsed: els.modelSelector.value,
-            overlays: JSON.parse(JSON.stringify(editor.state.overlays)),
-            filters: JSON.parse(JSON.stringify(editor.state.filters))
-        };
-
-        try {
-            await saveCreation(item);
-            showToast('Saved to Creations tab!', 'success');
-        } catch (err) {
-            showToast('Save failed: ' + err.message, 'error');
-        } finally {
-            toggleLoading(false);
-        }
-    });
-}
-
-// Update DOM elements values to match editor state (used on load and undo/loads)
-function syncStateToUI() {
-    const o = editor.state.overlays;
-    const f = editor.state.filters;
-
-    // Header sync
-    els.headerText.value = o.header.text;
-    els.headerFont.value = o.header.fontFamily;
-    els.headerAlign.value = o.header.alignment;
-    els.headerSize.value = o.header.fontSize;
-    els.headerSizeVal.textContent = o.header.fontSize + 'px';
-    els.headerSpacing.value = o.header.letterSpacing;
-    els.headerSpacingVal.textContent = o.header.letterSpacing + 'px';
-    els.headerActive.checked = o.header.active;
-    els.headerColorCustom.value = o.header.color.startsWith('#') ? o.header.color : '#facc15';
-
-    // Quote sync
-    els.quoteText.value = o.quote.text;
-    els.quoteFont.value = o.quote.fontFamily;
-    els.quoteAlign.value = o.quote.alignment;
-    els.quoteSize.value = o.quote.fontSize;
-    els.quoteSizeVal.textContent = o.quote.fontSize + 'px';
-    els.quoteLineHeight.value = Math.round(o.quote.lineHeight * 10);
-    els.quoteLineHeightVal.textContent = o.quote.lineHeight;
-    els.quoteActive.checked = o.quote.active;
-    els.quoteColorCustom.value = o.quote.color.startsWith('#') ? o.quote.color : '#ffffff';
-
-    // Author sync
-    els.authorText.value = o.author.text;
-    els.authorFont.value = o.author.fontFamily;
-    els.authorAlign.value = o.author.alignment;
-    els.authorSize.value = o.author.fontSize;
-    els.authorSizeVal.textContent = o.author.fontSize + 'px';
-    els.authorSpacing.value = o.author.letterSpacing;
-    els.authorSpacingVal.textContent = o.author.letterSpacing + 'px';
-    els.authorActive.checked = o.author.active;
-    els.authorColorCustom.value = o.author.color.startsWith('#') ? o.author.color : '#a1a1aa';
-
-    // Sync extra outline and background controls
-    const syncExtraControls = (key) => {
-        const outlineActiveEl = document.getElementById(`${key}-outline-active`);
-        const outlineColorEl = document.getElementById(`${key}-outline-color`);
-        const outlineWidthEl = document.getElementById(`${key}-outline-width`);
-        const bgActiveEl = document.getElementById(`${key}-bg-active`);
-        const bgColorEl = document.getElementById(`${key}-bg-color`);
-        const bgOpacityEl = document.getElementById(`${key}-bg-opacity`);
-
-        if (outlineActiveEl) outlineActiveEl.checked = !!o[key].outlineActive;
-        if (outlineColorEl) outlineColorEl.value = o[key].outlineColor || '#000000';
-        if (outlineWidthEl) outlineWidthEl.value = o[key].outlineWidth || 3;
-        if (bgActiveEl) bgActiveEl.checked = !!o[key].bgActive;
-        if (bgColorEl) bgColorEl.value = o[key].bgColor || '#000000';
-        if (bgOpacityEl) bgOpacityEl.value = o[key].bgOpacity || 50;
-    };
-
-    syncExtraControls('header');
-    syncExtraControls('quote');
-    syncExtraControls('author');
-
-    // Filters sync
-    els.filterBrightness.value = f.brightness;
-    els.filterBrightnessVal.textContent = f.brightness + '%';
-    els.filterContrast.value = f.contrast;
-    els.filterContrastVal.textContent = f.contrast + '%';
-    els.filterSaturation.value = f.saturation;
-    els.filterSaturationVal.textContent = f.saturation + '%';
-    els.filterBlur.value = f.blur;
-    els.filterBlurVal.textContent = f.blur + 'px';
-    els.filterVignette.value = Math.round(f.vignette * 100);
-    els.filterVignetteVal.textContent = Math.round(f.vignette * 100) + '%';
-}
-
-// Display toast notifications with modern cyberpunk transitions
-function showToast(message, type = 'info') {
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    
-    let icon;
-    if (type === 'success') {
-        icon = '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>';
-    } else if (type === 'error') {
-        icon = '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
-    } else {
-        icon = '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
-    }
-
-    const iconEl = document.createElement('div');
-    iconEl.className = 'toast-icon';
-    iconEl.innerHTML = icon;
-
-    const contentEl = document.createElement('div');
-    contentEl.className = 'toast-content';
-    contentEl.textContent = message;
-
-    toast.replaceChildren(iconEl, contentEl);
-
-    els.toastContainer.appendChild(toast);
-
-    // Fade out after 4s
-    setTimeout(() => {
-        toast.classList.add('toast-out');
-        toast.addEventListener('animationend', () => {
-            toast.remove();
-        });
-    }, 4000);
-}
-
-// Kick off
 init();
+
+async function init() {
+    restoreLocalState();
+    bindEvents();
+    renderIdeas();
+    renderStyleCategories();
+    renderStyles();
+    renderShapes();
+    renderTextSpace();
+    els.prompt.value = state.promptDraft || '';
+
+    await Promise.all([loadStatus(), loadStylePreviews()]);
+    renderStyles();
+    await account.handleEmailLinks();
+    await billing.handleReturn();
+    await restoreWork();
+    showView(viewFromHash(), { replace: true });
+}
+
+// ---------------------------------------------------------------- session & status
+
+async function loadStatus() {
+    try {
+        const status = await api.getStatus();
+        state.models = status.models || [];
+        state.aspectRatios = status.aspectRatios || state.aspectRatios;
+        state.providers = status.providers || {};
+        state.freeMonthlyCredits = status.offer?.freeMonthlyCredits || 0;
+        if (!state.aspectRatios.includes(state.aspectRatio)) state.aspectRatio = state.aspectRatios[0];
+        setUser(status.user, { silent: true });
+    } catch (error) {
+        showToast(`Couldn't reach the studio server. ${error.message}`, 'error', { duration: 8000 });
+    }
+    renderShapes();
+    renderEngines();
+    els.improveBtn.hidden = !state.providers.gemini?.configured;
+    els.improveBtn.nextElementSibling.hidden = els.improveBtn.hidden;
+}
+
+function setUser(user, { silent = false } = {}) {
+    const previousId = state.user?.id || null;
+    state.user = user || null;
+    if (previousId && previousId !== state.user?.id) {
+        // Someone signed out or switched accounts: the canvas image belongs to the old account.
+        resetWork();
+    }
+    updateUserUI();
+    if (!silent && state.activeView === 'account') account.renderAccountPage();
+    if (!silent && state.activeView === 'gallery') gallery.render();
+    if (state.user) {
+        api.getBillingStatus().then(({ billing: status }) => {
+            state.billing = status;
+            if (state.activeView === 'account') account.renderAccountPage();
+        }).catch(() => {});
+    } else {
+        state.billing = null;
+    }
+}
+
+function updateUserUI() {
+    const user = state.user;
+    const model = selectedModel();
+    const cost = model?.credits ?? 1;
+
+    if (user) {
+        els.accountBtn.textContent = user.email.charAt(0).toUpperCase();
+        els.accountBtn.title = `${user.email} · Account`;
+        els.accountBtn.setAttribute('aria-label', `Account for ${user.email}`);
+        els.accountBtn.classList.add('signed-in');
+        els.creditsPill.hidden = false;
+        els.creditsCount.textContent = String(user.credits.balance);
+        els.creditsPill.classList.toggle('low', user.credits.balance < cost);
+    } else {
+        els.accountBtn.textContent = 'Sign in';
+        els.accountBtn.title = 'Sign in or create an account';
+        els.accountBtn.setAttribute('aria-label', 'Sign in');
+        els.accountBtn.classList.remove('signed-in');
+        els.creditsPill.hidden = true;
+    }
+
+    updateGenerateButton();
+}
+
+function updateGenerateButton() {
+    const model = selectedModel();
+    const cost = model?.credits ?? 0;
+    els.generateLabel.textContent = state.generating
+        ? 'Creating…'
+        : editor.hasImage ? 'Create a new version' : 'Create image';
+    els.generateCost.textContent = model ? `· ${pluralize(cost, 'credit')}` : '';
+    els.generateBtn.disabled = state.generating || !model;
+
+    const user = state.user;
+    if (!state.models.some((candidate) => candidate.configured)) {
+        els.footerNote.textContent = 'No image engines are set up on the server yet.';
+    } else if (!user) {
+        els.footerNote.innerHTML = state.freeMonthlyCredits
+            ? html`New here? <button type="button" data-action="signup">Sign up free</button> and get ${pluralize(state.freeMonthlyCredits, 'credit')}.`
+            : html`<button type="button" data-action="signup">Create a free account</button> to start.`;
+    } else if (user.credits.balance < cost) {
+        els.footerNote.innerHTML = html`You have ${pluralize(user.credits.balance, 'credit')}. <button type="button" data-action="paywall">Get more credits</button>`;
+    } else {
+        const refill = user.credits.refreshesAt && user.credits.allowanceSource === 'free'
+            ? ` · free credits refill ${formatDate(user.credits.refreshesAt, { month: 'short', day: 'numeric' })}`
+            : '';
+        els.footerNote.textContent = `You have ${pluralize(user.credits.balance, 'credit')}${refill}`;
+    }
+}
+
+async function loadStylePreviews() {
+    try {
+        const response = await fetch('/style-previews/manifest.json');
+        if (!response.ok) return;
+        const manifest = await response.json();
+        state.stylePreviews = new Set(Object.keys(manifest.previews || {}));
+        state.stylePreviewFiles = manifest.previews || {};
+    } catch {
+        // Previews are optional; cards fall back to palette swatches.
+    }
+}
+
+// ---------------------------------------------------------------- navigation
+
+function viewFromHash() {
+    const name = window.location.hash.replace('#', '');
+    return ['gallery', 'account', 'admin'].includes(name) ? name : 'create';
+}
+
+function showView(name, { replace = false } = {}) {
+    state.activeView = name;
+    document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.dataset.view === name));
+    document.querySelectorAll('.topnav-link').forEach((link) => link.classList.toggle('active', link.dataset.nav === name));
+
+    const hash = name === 'create' ? '' : `#${name}`;
+    if (window.location.hash !== hash) {
+        const url = `${window.location.pathname}${window.location.search}${hash}`;
+        if (replace) window.history.replaceState({}, '', url);
+        else window.history.pushState({}, '', url);
+    }
+
+    if (name === 'gallery') gallery.render();
+    if (name === 'account') account.renderAccountPage();
+    if (name === 'admin') admin.render();
+    if (name === 'create') requestAnimationFrame(() => editor.requestRender());
+    window.scrollTo({ top: 0 });
+}
+
+function setTab(name) {
+    if (name !== 'create' && !editor.hasImage) return;
+    state.activeTab = name;
+    document.querySelectorAll('.panel-tab').forEach((tab) => {
+        const active = tab.dataset.tab === name;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+    });
+    document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+        panel.hidden = panel.dataset.tabPanel !== name;
+    });
+}
+
+// ---------------------------------------------------------------- create panel
+
+function renderIdeas() {
+    els.ideaRow.innerHTML = IDEAS.map((idea) => html`<button class="idea-chip" type="button" data-idea="${idea}">${idea}</button>`).join('');
+}
+
+function renderStyleCategories() {
+    const categories = [{ id: 'all', label: 'All' }, ...STYLE_CATEGORIES];
+    els.styleCategories.innerHTML = categories.map((category) => html`
+        <button class="chip ${state.category === category.id ? 'active' : ''}" type="button" role="tab" data-category="${category.id}">${category.label}</button>
+    `).join('');
+}
+
+function renderStyles() {
+    const styles = STYLE_LIBRARY.filter((style) => state.category === 'all' || style.category === state.category);
+    const selected = getStyleById(state.styleId);
+    const noneCard = state.category === 'all'
+        ? html`
+            <button class="style-card ${selected ? '' : 'active'}" type="button" data-style="" aria-pressed="${String(!selected)}" title="Follow your description exactly">
+                <span class="style-thumb none">No style</span>
+                <span class="style-name">Just my words</span>
+            </button>`
+        : '';
+
+    els.styleGrid.innerHTML = noneCard + styles.map((style) => {
+        const preview = state.stylePreviewFiles?.[style.id];
+        return html`
+            <button class="style-card ${style.id === state.styleId ? 'active' : ''}" type="button" data-style="${style.id}" aria-pressed="${String(style.id === state.styleId)}" title="${style.blurb}">
+                <span class="style-thumb" style="background:${getStylePreviewBackground(style)}">
+                    ${preview ? raw(html`<img src="/style-previews/${preview}" alt="" loading="lazy">`) : ''}
+                </span>
+                <span class="style-name">${style.name}</span>
+            </button>
+        `;
+    }).join('');
+
+    els.stylePicked.textContent = selected ? selected.name : '';
+    let blurb = els.styleGrid.nextElementSibling;
+    if (!blurb?.classList.contains('style-blurb')) {
+        blurb = document.createElement('p');
+        blurb.className = 'style-blurb';
+        els.styleGrid.after(blurb);
+    }
+    blurb.textContent = selected ? `${selected.name}: ${selected.blurb}` : 'No style: the engine follows your description as written.';
+}
+
+function renderShapes() {
+    els.shapeRow.innerHTML = SHAPES.filter((shape) => state.aspectRatios.includes(shape.id)).map((shape) => {
+        const [w, h] = shape.id.split(':').map(Number);
+        const scale = 26 / Math.max(w, h);
+        return html`
+            <button class="shape-btn ${shape.id === state.aspectRatio ? 'active' : ''}" type="button" data-shape="${shape.id}" aria-pressed="${String(shape.id === state.aspectRatio)}">
+                <span class="shape-icon"><span style="width:${Math.round(w * scale)}px;height:${Math.round(h * scale)}px"></span></span>
+                ${shape.label}
+                <small>${shape.note}</small>
+            </button>
+        `;
+    }).join('');
+}
+
+function renderEngines() {
+    const available = state.models.filter((model) => model.configured);
+    if (!available.length) {
+        els.engineList.innerHTML = '<p class="empty-note">No image engines are available right now. The site owner needs to add provider API keys on the server.</p>';
+        updateGenerateButton();
+        return;
+    }
+
+    if (!available.some((model) => model.id === state.modelId)) {
+        state.modelId = (available.find((model) => model.recommended) || available[0]).id;
+    }
+
+    els.engineList.innerHTML = available.map((model) => html`
+        <button class="engine-card ${model.id === state.modelId ? 'active' : ''}" type="button" data-model="${model.id}" aria-pressed="${String(model.id === state.modelId)}">
+            <span class="engine-name">${model.label}${model.recommended ? raw('<span class="badge">Recommended</span>') : ''}</span>
+            <span class="engine-desc">${model.description}</span>
+            <span class="engine-cost">${pluralize(model.credits, 'credit')}</span>
+        </button>
+    `).join('');
+    updateUserUI();
+}
+
+function renderTextSpace() {
+    els.textSpace.innerHTML = TEXT_SPACE_OPTIONS.map((option) => html`
+        <button type="button" role="radio" data-text-space="${option.id}" class="${option.id === state.textSpace ? 'active' : ''}" aria-checked="${String(option.id === state.textSpace)}">${option.label}</button>
+    `).join('');
+}
+
+function selectedModel() {
+    return state.models.find((model) => model.id === state.modelId && model.configured) || null;
+}
+
+// ---------------------------------------------------------------- generation
+
+async function handleGenerate() {
+    const prompt = els.prompt.value.trim();
+    if (!prompt) {
+        showToast('Describe what you\'d like to see first.', 'info');
+        els.prompt.focus();
+        return;
+    }
+
+    if (!state.user) {
+        account.open({
+            mode: 'signup',
+            then: () => handleGenerate(),
+            message: state.freeMonthlyCredits
+                ? `Create a free account to paint this. You'll get ${pluralize(state.freeMonthlyCredits, 'free credit')}.`
+                : 'Create a free account to paint this.'
+        });
+        return;
+    }
+
+    if (state.user.emailVerificationRequired && !state.user.emailVerified) {
+        showToast('Please verify your email first. We sent a link to your inbox.', 'info', { duration: 7000 });
+        showView('account');
+        return;
+    }
+
+    const model = selectedModel();
+    if (!model) return;
+
+    if (state.user.credits.balance < model.credits) {
+        billing.open({ reason: 'insufficient', needed: model.credits });
+        return;
+    }
+
+    const settings = {
+        prompt,
+        styleId: state.styleId,
+        textSpace: state.textSpace,
+        aspectRatio: state.aspectRatio,
+        modelId: model.id,
+        provider: model.provider
+    };
+    const hadImage = editor.hasImage;
+
+    state.generating = true;
+    state.abortController = new AbortController();
+    showLoading(true, { cancellable: true });
+    updateGenerateButton();
+
+    try {
+        const result = await api.generateImage({
+            ...settings,
+            model: model.id,
+            signal: state.abortController.signal
+        });
+        await editor.loadImage(result.imageUrl);
+        if (!hadImage) {
+            await editor.setDesign({ layers: [], filters: DEFAULT_FILTERS });
+        }
+
+        state.imageUrl = result.imageUrl;
+        state.galleryItemId = null;
+        state.lastGeneration = settings;
+        state.dirty = true;
+        if (result.credits && state.user) {
+            state.user = { ...state.user, credits: result.credits };
+        }
+        setHasImage(true);
+        updateUserUI();
+        updateSaveLabel();
+        saveLocalState();
+        textPanel.render();
+        showToast(hadImage ? 'Here\'s your new version.' : 'Your artwork is ready! Add a title or message with "Add text".', 'success', { duration: 6000 });
+    } catch (error) {
+        handleGenerationError(error, model);
+    } finally {
+        state.generating = false;
+        state.abortController = null;
+        showLoading(false);
+        updateGenerateButton();
+    }
+}
+
+function handleGenerationError(error, model) {
+    const code = error.code;
+    const refundNote = ' You weren\'t charged.';
+
+    if (error.name === 'AbortError' || code === 'generation_aborted') {
+        showToast(`Canceled.${refundNote}`, 'info');
+        // The server refunds once it notices the dropped request, a moment after we abort.
+        setTimeout(refreshCredits, 1200);
+        return;
+    } else if (code === 'insufficient_credits') {
+        billing.open({ reason: 'insufficient', needed: error.details?.cost ?? model.credits });
+    } else if (code === 'auth_required') {
+        setUser(null);
+        account.open({ mode: 'login', message: 'Your session ended. Please sign in again.' });
+    } else if (code === 'email_unverified') {
+        showToast('Please verify your email first. We sent a link to your inbox.', 'info', { duration: 7000 });
+        showView('account');
+    } else if (code === 'content_policy_blocked') {
+        showToast('That description can\'t be created here. Please try something different.', 'error', { duration: 7000 });
+    } else if (code === 'rate_limited') {
+        showToast('You\'re creating very quickly! Please wait a few minutes and try again.', 'error');
+    } else {
+        showToast(`${error.message || 'Something went wrong.'}${refundNote}`, 'error', { duration: 7000 });
+    }
+
+    refreshCredits();
+}
+
+async function refreshCredits() {
+    if (!state.user) return;
+    try {
+        const status = await api.getStatus();
+        if (status.user) {
+            state.user = status.user;
+            updateUserUI();
+        }
+    } catch {
+        // Non-critical; the balance refreshes on the next successful request.
+    }
+}
+
+let loadingTimer = null;
+
+function showLoading(visible, { cancellable = false, message = null } = {}) {
+    clearInterval(loadingTimer);
+    els.stageLoading.hidden = !visible;
+    els.createView.classList.toggle('generating', visible);
+    if (!visible) return;
+
+    els.cancelBtn.hidden = !cancellable;
+    const startedAt = Date.now();
+    let index = 0;
+    els.loadingMessage.textContent = message || LOADING_MESSAGES[0];
+    els.loadingElapsed.textContent = '';
+    loadingTimer = setInterval(() => {
+        const seconds = Math.round((Date.now() - startedAt) / 1000);
+        if (!message && seconds % 4 === 0) {
+            index = (index + 1) % LOADING_MESSAGES.length;
+            els.loadingMessage.textContent = LOADING_MESSAGES[index];
+        }
+        els.loadingElapsed.textContent = cancellable ? `${seconds}s · most images take 10 to 40 seconds` : '';
+    }, 1000);
+    if (window.matchMedia('(max-width: 860px)').matches) {
+        els.stageLoading.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+}
+
+function setHasImage(hasImage) {
+    els.canvas.hidden = !hasImage;
+    els.stageEmpty.hidden = hasImage;
+    els.stageToolbar.hidden = !hasImage;
+    els.stageHint.hidden = !hasImage;
+    els.createView.classList.toggle('has-image', hasImage);
+    document.querySelectorAll('.panel-tab').forEach((tab) => {
+        if (tab.dataset.tab !== 'create') tab.disabled = !hasImage;
+    });
+    if (!hasImage) setTab('create');
+    updateHistoryButtons();
+    updateGenerateButton();
+}
+
+function updateHistoryButtons() {
+    els.undoBtn.disabled = !editor.canUndo;
+    els.redoBtn.disabled = !editor.canRedo;
+}
+
+function updateSaveLabel() {
+    els.saveLabel.textContent = state.galleryItemId ? 'Save changes' : 'Save to My Art';
+}
+
+function resetWork() {
+    editor.clear();
+    state.imageUrl = null;
+    state.galleryItemId = null;
+    state.lastGeneration = null;
+    state.dirty = false;
+    setHasImage(false);
+    textPanel.render();
+    saveLocalState();
+}
+
+// ---------------------------------------------------------------- toolbar actions
+
+async function handleSave() {
+    if (!editor.hasImage) return;
+    if (!state.user) {
+        account.open({ mode: 'login', then: () => handleSave() });
+        return;
+    }
+
+    els.saveBtn.disabled = true;
+    try {
+        editor.select(null);
+        await editor.fontsReady();
+        const finalImage = editor.exportDataUrl('image/jpeg', 0.92);
+        const design = editor.getDesign();
+        if (state.galleryItemId) {
+            await api.updateGalleryItem(state.galleryItemId, { finalImage, design });
+            showToast('Changes saved to My Art.', 'success');
+        } else {
+            const item = await api.saveGalleryItem({
+                originalImage: state.imageUrl,
+                finalImage,
+                design,
+                prompt: state.lastGeneration?.prompt || els.prompt.value.trim(),
+                stylePreset: state.lastGeneration?.styleId || '',
+                modelUsed: state.lastGeneration?.modelId || '',
+                aspectRatio: state.lastGeneration?.aspectRatio || state.aspectRatio
+            });
+            state.galleryItemId = item.id;
+            showToast('Saved to My Art.', 'success');
+        }
+        state.dirty = false;
+        updateSaveLabel();
+        saveLocalState();
+    } catch (error) {
+        showToast(`Couldn't save: ${error.message}`, 'error');
+    } finally {
+        els.saveBtn.disabled = false;
+    }
+}
+
+async function handleDownload() {
+    if (!editor.hasImage) return;
+    try {
+        await editor.fontsReady();
+        const blob = await editor.exportBlob('image/png');
+        downloadBlob(blob, `${slugify(state.lastGeneration?.prompt || els.prompt.value)}.png`);
+        showToast('Downloaded a full-resolution PNG.', 'success');
+    } catch (error) {
+        showToast(`Download failed: ${error.message}`, 'error');
+    }
+}
+
+async function handleShare() {
+    if (!editor.hasImage) return;
+    try {
+        await editor.fontsReady();
+        const blob = await editor.exportBlob('image/png');
+        const file = new File([blob], `${slugify(state.lastGeneration?.prompt)}.png`, { type: 'image/png' });
+        if (navigator.canShare?.({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'My artwork' });
+            return;
+        }
+        if (navigator.clipboard?.write && window.ClipboardItem) {
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            showToast('Copied! Paste it into a message or email.', 'success');
+            return;
+        }
+        downloadBlob(blob, file.name);
+        showToast('Sharing isn\'t available in this browser, so we downloaded it instead.', 'info');
+    } catch (error) {
+        if (error.name !== 'AbortError') showToast(`Couldn't share: ${error.message}`, 'error');
+    }
+}
+
+function handleNewImage() {
+    if (state.dirty && !window.confirm('Start a new image? Your current design will be cleared unless you\'ve saved it.')) return;
+    resetWork();
+    els.prompt.focus();
+}
+
+function handleAddText() {
+    setTab('text');
+    const preset = TEXT_PRESETS.find((candidate) => candidate.id === 'headline');
+    const overrides = preset.build(getStyleById(state.lastGeneration?.styleId));
+    if ((state.lastGeneration?.textSpace) === 'bottom') overrides.y = 0.84;
+    editor.addLayer(overrides);
+    textPanel.focusText();
+}
+
+async function openGalleryItem(item) {
+    if (state.dirty && editor.hasImage && !window.confirm('Open this piece? Unsaved changes to your current design will be lost.')) return;
+
+    showView('create');
+    showLoading(true, { message: 'Opening your artwork…' });
+    try {
+        await editor.loadImage(item.originalImage);
+        const design = Array.isArray(item.design?.layers) ? item.design : designFromLegacy(item.overlays, item.filters);
+        await editor.setDesign(design);
+        state.imageUrl = item.originalImage;
+        state.galleryItemId = item.id;
+        state.lastGeneration = {
+            prompt: item.prompt,
+            styleId: getStyleById(item.stylePreset)?.id || null,
+            aspectRatio: item.aspectRatio,
+            modelId: item.modelUsed,
+            textSpace: 'none'
+        };
+        els.prompt.value = item.prompt || '';
+        state.dirty = false;
+        setHasImage(true);
+        setTab('text');
+        textPanel.render();
+        updateSaveLabel();
+        saveLocalState();
+    } catch (error) {
+        showToast(`Couldn't open that piece: ${error.message}`, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function handleImprove() {
+    const prompt = els.prompt.value.trim();
+    if (!prompt) {
+        showToast('Type a few words first, then we\'ll help flesh them out.', 'info');
+        els.prompt.focus();
+        return;
+    }
+    if (!state.user) {
+        account.open({ mode: 'signup', then: () => handleImprove() });
+        return;
+    }
+
+    els.improveBtn.disabled = true;
+    const original = els.improveBtn.innerHTML;
+    els.improveBtn.lastChild.textContent = ' Improving…';
+    try {
+        els.prompt.value = await api.improveDescription(prompt, state.styleId);
+        saveLocalState();
+        showToast('Description improved. Edit it however you like.', 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        els.improveBtn.innerHTML = original;
+        els.improveBtn.disabled = false;
+    }
+}
+
+// ---------------------------------------------------------------- persistence
+
+let saveTimer = null;
+
+function saveLocalState() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(writeLocalState, 300);
+}
+
+function flushLocalState() {
+    if (!saveTimer) return;
+    clearTimeout(saveTimer);
+    writeLocalState();
+}
+
+function writeLocalState() {
+    saveTimer = null;
+    const snapshot = {
+        prompt: els.prompt.value,
+        styleId: state.styleId,
+        category: state.category,
+        aspectRatio: state.aspectRatio,
+        modelId: state.modelId,
+        textSpace: state.textSpace,
+        imageUrl: state.imageUrl,
+        galleryItemId: state.galleryItemId,
+        lastGeneration: state.lastGeneration,
+        dirty: state.dirty,
+        design: editor.hasImage ? editor.getDesign() : null
+    };
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+        // Storage can be full or blocked (private browsing); work simply won't persist.
+    }
+}
+
+function restoreLocalState() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+        if (!saved) return;
+        state.promptDraft = saved.prompt || '';
+        state.styleId = getStyleById(saved.styleId)?.id || null;
+        state.category = saved.category || 'all';
+        state.aspectRatio = saved.aspectRatio || state.aspectRatio;
+        state.modelId = saved.modelId || null;
+        state.textSpace = saved.textSpace || 'none';
+        state.savedWork = saved.imageUrl ? saved : null;
+    } catch {
+        state.savedWork = null;
+    }
+}
+
+async function restoreWork() {
+    const saved = state.savedWork;
+    state.savedWork = null;
+    if (!saved || !state.user || editor.hasImage) return;
+
+    try {
+        await editor.loadImage(saved.imageUrl);
+        await editor.setDesign(saved.design || { layers: [], filters: DEFAULT_FILTERS });
+        state.imageUrl = saved.imageUrl;
+        state.galleryItemId = saved.galleryItemId || null;
+        state.lastGeneration = saved.lastGeneration || null;
+        state.dirty = Boolean(saved.dirty);
+        setHasImage(true);
+        textPanel.render();
+        updateSaveLabel();
+    } catch {
+        resetWork();
+    }
+}
+
+// ---------------------------------------------------------------- events
+
+function bindEvents() {
+    document.addEventListener('click', (event) => {
+        const nav = event.target.closest('[data-nav]');
+        if (nav) {
+            event.preventDefault();
+            showView(nav.dataset.nav);
+            return;
+        }
+        const action = event.target.closest('[data-action]')?.dataset.action;
+        if (action === 'signup' && event.target.closest('#footer-note')) account.open({ mode: 'signup' });
+        if (action === 'paywall' && event.target.closest('#footer-note')) billing.open({ reason: 'topup' });
+    });
+
+    window.addEventListener('hashchange', () => showView(viewFromHash(), { replace: true }));
+
+    els.accountBtn.addEventListener('click', () => {
+        if (state.user) showView('account');
+        else account.open({ mode: 'login' });
+    });
+    els.creditsPill.addEventListener('click', () => billing.open({ reason: 'topup' }));
+
+    document.querySelectorAll('.panel-tab').forEach((tab) => {
+        tab.addEventListener('click', () => setTab(tab.dataset.tab));
+    });
+
+    els.prompt.addEventListener('input', saveLocalState);
+    els.prompt.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) handleGenerate();
+    });
+    els.improveBtn.addEventListener('click', handleImprove);
+
+    els.ideaRow.addEventListener('click', (event) => {
+        const idea = event.target.closest('[data-idea]')?.dataset.idea;
+        if (!idea) return;
+        els.prompt.value = idea;
+        saveLocalState();
+        els.prompt.focus();
+    });
+
+    els.styleCategories.addEventListener('click', (event) => {
+        const category = event.target.closest('[data-category]')?.dataset.category;
+        if (!category) return;
+        state.category = category;
+        renderStyleCategories();
+        renderStyles();
+        saveLocalState();
+    });
+
+    els.styleGrid.addEventListener('click', (event) => {
+        const card = event.target.closest('[data-style]');
+        if (!card) return;
+        state.styleId = card.dataset.style || null;
+        renderStyles();
+        saveLocalState();
+    });
+
+    els.shapeRow.addEventListener('click', (event) => {
+        const shape = event.target.closest('[data-shape]')?.dataset.shape;
+        if (!shape) return;
+        state.aspectRatio = shape;
+        renderShapes();
+        saveLocalState();
+    });
+
+    els.engineList.addEventListener('click', (event) => {
+        const model = event.target.closest('[data-model]')?.dataset.model;
+        if (!model) return;
+        state.modelId = model;
+        renderEngines();
+        saveLocalState();
+    });
+
+    els.textSpace.addEventListener('click', (event) => {
+        const option = event.target.closest('[data-text-space]')?.dataset.textSpace;
+        if (!option) return;
+        state.textSpace = option;
+        renderTextSpace();
+        saveLocalState();
+    });
+
+    els.generateBtn.addEventListener('click', handleGenerate);
+    els.cancelBtn.addEventListener('click', () => state.abortController?.abort());
+    els.undoBtn.addEventListener('click', () => editor.undo());
+    els.redoBtn.addEventListener('click', () => editor.redo());
+    els.addTextBtn.addEventListener('click', handleAddText);
+    els.newImageBtn.addEventListener('click', handleNewImage);
+    els.shareBtn.addEventListener('click', handleShare);
+    els.downloadBtn.addEventListener('click', handleDownload);
+    els.saveBtn.addEventListener('click', handleSave);
+
+    editor.addEventListener('history', updateHistoryButtons);
+    editor.addEventListener('change', () => {
+        state.dirty = true;
+        updateHistoryButtons();
+        saveLocalState();
+    });
+    editor.addEventListener('select', (event) => {
+        if (event.detail.id && state.activeTab !== 'text') setTab('text');
+    });
+    editor.addEventListener('edittext', () => {
+        setTab('text');
+        textPanel.focusText();
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (!(event.metaKey || event.ctrlKey) || state.activeView !== 'create' || !editor.hasImage) return;
+        if (event.target.closest('input, textarea, [contenteditable]')) return;
+        const key = event.key.toLowerCase();
+        if (key === 'z' && !event.shiftKey) {
+            editor.undo();
+            event.preventDefault();
+        } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+            editor.redo();
+            event.preventDefault();
+        }
+    });
+
+    // Checkout and emailed links navigate away; never drop a pending draft save.
+    window.addEventListener('pagehide', flushLocalState);
+    window.addEventListener('beforeunload', (event) => {
+        flushLocalState();
+        if (state.generating) {
+            event.preventDefault();
+        }
+    });
+}

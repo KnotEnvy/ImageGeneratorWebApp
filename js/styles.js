@@ -97,7 +97,7 @@ export const STYLE_LIBRARY = [
         blurb: 'Carved lines, flat serene color.',
         prompt: 'traditional Japanese woodblock print style, flat areas of color, bold carved outlines, subtle wood grain and washi paper texture, limited indigo and vermilion palette, serene balanced composition',
         palette: ['#efe6d2', '#2f4b7c', '#c8553d', '#8a9a5b'],
-        fonts: { title: 'Shippori Mincho', body: 'Noto Serif JP' }
+        fonts: { title: 'Cormorant Garamond', body: 'Lora' }
     },
     {
         id: 'risograph',
@@ -348,5 +348,11 @@ export function composeStylePrompt(subject, style, { textSpace = 'none' } = {}) 
 /** CSS background used for a style's picker card until a real preview thumbnail exists. */
 export function getStylePreviewBackground(style) {
     const [a, b, c, d] = style.palette;
-    return `radial-gradient(circle at 25% 30%, ${c} 0 18%, transparent 19%), radial-gradient(circle at 75% 70%, ${d}cc 0 22%, transparent 23%), linear-gradient(135deg, ${a} 0%, ${b} 100%)`;
+    // A tiny landscape painted in the style's palette: sky, sun, and two hills.
+    return [
+        `radial-gradient(circle at 70% 32%, ${c} 0 11%, transparent 12%)`,
+        `radial-gradient(ellipse 75% 38% at 22% 100%, ${d} 0 70%, transparent 71%)`,
+        `radial-gradient(ellipse 70% 32% at 88% 100%, ${b} 0 70%, transparent 71%)`,
+        `linear-gradient(180deg, ${a} 0%, ${a} 35%, ${b} 140%)`
+    ].join(', ');
 }

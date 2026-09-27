@@ -1,10 +1,9 @@
 {
   "name": "nano-banana-art-lab",
-  "homepage": "https://YOUR_GITHUB_USERNAME.github.io/YOUR_REPOSITORY_NAME",
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "description": "SaaS-ready image generation studio with server-side provider integrations.",
+  "description": "Nano Banana Art Studio: an AI art studio with curated styles, a layered text editor, and credit-based billing.",
   "scripts": {
     "dev": "node server.js --dev",
     "vite:dev": "vite --port 5180",
@@ -15,16 +14,14 @@
     "test:providers": "node scripts/real-provider-smoke.mjs",
     "test:storage": "node scripts/object-storage-smoke.mjs",
     "test:rate-limit": "node scripts/redis-rate-limit-smoke.mjs",
+    "styles:previews": "node scripts/generate-style-previews.mjs",
     "start": "node server.js --production",
-    "preview": "node server.js --production",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "preview": "node server.js --production"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "eslint": "^10.4.1",
-    "gh-pages": "^6.3.0",
     "globals": "^17.6.0",
     "vite": "^8.0.16"
   },

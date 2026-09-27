@@ -2,607 +2,226 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nano Banana - Creative Motivational Art Lab</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Nano Banana Art Studio</title>
+    <meta name="description" content="Create beautiful, professional artwork with AI. Pick a style, add your words, and download.">
+    <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#16140f" media="(prefers-color-scheme: dark)">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=DM+Serif+Display:ital@0;1&family=Lora:ital,wght@0,400;0,600;1,400&family=Cinzel:wght@400;700&family=Cinzel+Decorative:wght@400;700&family=Work+Sans:wght@400;500;700&family=Josefin+Sans:wght@400;600;700&family=Outfit:wght@400;600;800&family=Nunito:wght@400;700;800&family=Space+Grotesk:wght@400;600;700&family=Fredoka:wght@400;600&family=Great+Vibes&family=Dancing+Script:wght@400;700&family=Caveat:wght@400;700&family=Pacifico&family=Bebas+Neue&family=Abril+Fatface&family=Bangers&family=Orbitron:wght@400;700&family=Press+Start+2P&display=swap">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-
-    <!-- Linear Gradients for SVGs -->
-    <svg style="width:0; height:0; position:absolute;" aria-hidden="true" focusable="false">
-        <defs>
-            <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#facc15" />
-                <stop offset="100%" stop-color="#a855f7" />
-            </linearGradient>
-            <linearGradient id="placeholderGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#c084fc" stop-opacity="0.6"/>
-                <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.6"/>
-            </linearGradient>
-        </defs>
-    </svg>
-
-    <!-- Visual Background Blobs -->
-    <div class="bg-blobs">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
-    </div>
-
-    <!-- Header Navigation -->
-    <header>
-        <div class="logo" id="logo-trigger">
-            <!-- Banana logo overlayed with grid lines -->
-            <svg viewBox="0 0 24 24">
-                <path d="M12 2a10 10 0 0 1 10 10c0 5.523-4.477 10-10 10S2 17.523 2 12A10 10 0 0 1 12 2zm0 2a8 8 0 0 0-5.83 2.508c1.373 1.34 3.284 2.164 5.378 2.164 4.095 0 7.42-3.158 7.478-7.234A7.953 7.953 0 0 0 12 4z"/>
+    <header class="topbar">
+        <a class="brand" href="#create" data-nav="create" aria-label="Nano Banana Art Studio home">
+            <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+                <circle cx="16" cy="16" r="15" fill="var(--accent)"/>
+                <path d="M9 21c5 2.5 12 .5 14.5-7.5.3-1-.9-1.7-1.6-.9C19 16 14.5 18 9.8 18.2c-1.2.1-1.9 2.2-.8 2.8z" fill="#fff6dc"/>
             </svg>
-            <span>NANO BANANA</span>
-        </div>
+            <span class="brand-name">Nano Banana</span>
+            <span class="brand-sub">Art Studio</span>
+        </a>
 
-        <nav>
-            <button class="nav-btn active" id="nav-studio">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                Studio
-            </button>
-            <button class="nav-btn" id="nav-gallery">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                Creations
-            </button>
-            <button class="nav-btn" id="nav-settings">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                Server
-            </button>
-            <button class="nav-btn" id="nav-admin">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.4 8.7-8 9-4.6-.3-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-5"/></svg>
-                Admin
-            </button>
-            <div class="api-key-badge" id="api-key-badge">
-                <span class="indicator">*</span> Server API Setup Required
-            </div>
+        <nav class="topnav" aria-label="Main">
+            <button class="topnav-link active" type="button" data-nav="create">Create</button>
+            <button class="topnav-link" type="button" data-nav="gallery">My Art</button>
         </nav>
+
+        <div class="topbar-actions">
+            <button class="credits-pill" id="credits-pill" type="button" hidden aria-label="Credits">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+                <span><strong id="credits-count">0</strong> <span class="credits-word">credits</span></span>
+            </button>
+            <button class="account-btn" id="account-btn" type="button">Sign in</button>
+        </div>
     </header>
 
-    <!-- Main Views -->
     <main>
-        
-        <!-- View 1: Studio (Generator + Editor) -->
-        <section class="view-section active" id="studio-view">
-            <!-- Left Side Control Panel -->
-            <div class="control-panel">
-                <div class="panel-header">
-                    <h2>Art Laboratory</h2>
+        <!-- Create -->
+        <section class="view active" id="view-create" data-view="create">
+            <aside class="panel" aria-label="Design controls">
+                <div class="panel-tabs" role="tablist">
+                    <button class="panel-tab active" type="button" role="tab" data-tab="create" aria-selected="true">Create</button>
+                    <button class="panel-tab" type="button" role="tab" data-tab="text" aria-selected="false" disabled>Text</button>
+                    <button class="panel-tab" type="button" role="tab" data-tab="adjust" aria-selected="false" disabled>Adjust</button>
                 </div>
 
-                <!-- Tabs -->
-                <div class="tabs-container">
-                    <button class="tab-trigger active" data-tab="tab-generate">Prompt</button>
-                    <button class="tab-trigger" data-tab="tab-text">Typography</button>
-                    <button class="tab-trigger" data-tab="tab-filters">Filters</button>
-                </div>
-
-                <!-- Tab: Generate -->
-                <div class="panel-tab-content active" id="tab-generate">
-                    <!-- Prompt Area -->
-                    <div class="field-group">
-                        <label class="field-label" for="prompt-input">
-                            Creative Prompt
-                            <span class="desc">What do you want to see?</span>
-                        </label>
-                        <textarea class="text-input" id="prompt-input" placeholder="A futuristic tropical garden, synthwave sunset lighting, volumetric dust..."></textarea>
-                        
-                        <button class="enhance-btn" id="enhance-prompt-btn" title="Enhance prompt with Gemini AI">
-                            <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6C8.8 12.02 8 10.59 8 9c0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.59-.8 3.02-2.15 4.1z"/></svg>
-                            AI Enhance
-                        </button>
-                    </div>
-
-                    <!-- Preset Styles -->
-                    <div class="field-group">
-                        <label class="field-label">Style Presets</label>
-                        <div class="preset-grid" id="style-presets">
-                            <!-- Preset 1 -->
-                            <div class="preset-card active" data-preset="None">
-                                <span class="preset-title">Raw & Natural</span>
-                                <span class="preset-desc">Follows prompt literally without styles.</span>
-                            </div>
-                            <!-- Preset 2 -->
-                            <div class="preset-card" data-preset="Cyberpunk Neon">
-                                <span class="preset-title">Cyberpunk Neon</span>
-                                <span class="preset-desc">Vibrant cyan, violet tones, holographic glows.</span>
-                            </div>
-                            <!-- Preset 3 -->
-                            <div class="preset-card" data-preset="Surrealist Dream">
-                                <span class="preset-title">Surrealist Dream</span>
-                                <span class="preset-desc">Whimsical structures, floaty oil elements.</span>
-                            </div>
-                            <!-- Preset 4 -->
-                            <div class="preset-card" data-preset="Vintage Retro Poster">
-                                <span class="preset-title">Vintage Retro Poster</span>
-                                <span class="preset-desc">Warm grain, distressed canvas, classic art print.</span>
-                            </div>
-                            <!-- Preset 5 -->
-                            <div class="preset-card" data-preset="Minimalist 3D Glass">
-                                <span class="preset-title">Minimalist 3D Glass</span>
-                                <span class="preset-desc">Clean frosted surfaces, soft pastel gradients.</span>
-                            </div>
-                            <!-- Preset 6 -->
-                            <div class="preset-card" data-preset="Moody Dark Editorial">
-                                <span class="preset-title">Moody Dark Editorial</span>
-                                <span class="preset-desc">Deep chiaroscuro shadows, high fashion mood.</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Aspect Ratio Selector -->
-                    <div class="field-group">
-                        <label class="field-label">Orientation / Aspect Ratio</label>
-                        <div class="aspect-selectors">
-                            <button class="aspect-btn active" data-aspect="1:1">
-                                <div class="aspect-icon ratio-1-1"></div>
-                                Square (1:1)
+                <div class="panel-body" data-tab-panel="create">
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">1</span> Describe your image</h2>
+                        <textarea class="field textarea" id="prompt-input" rows="4" maxlength="2000"
+                            placeholder="A cozy cottage garden at dawn, foxgloves along the path and a cat asleep on the steps"></textarea>
+                        <div class="prompt-tools">
+                            <button class="btn btn-soft btn-small" id="improve-btn" type="button">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.6L18 9.5l-4.2 1.9L12 16l-1.8-4.6L6 9.5l4.2-1.9zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9zM5 15l.7 1.6L7.3 17.3l-1.6.7L5 19.6l-.7-1.6L2.7 17.3l1.6-.7z"/></svg>
+                                Improve my description
                             </button>
-                            <button class="aspect-btn" data-aspect="16:9">
-                                <div class="aspect-icon ratio-16-9"></div>
-                                Widescreen (16:9)
-                            </button>
-                            <button class="aspect-btn" data-aspect="9:16">
-                                <div class="aspect-icon ratio-9-16"></div>
-                                Portrait (9:16)
-                            </button>
+                            <span class="hint">Free</span>
                         </div>
-                    </div>
+                        <div class="idea-row" id="idea-row" aria-label="Ideas to try"></div>
+                    </section>
 
-                    <!-- Model Choice -->
-                    <div class="field-group">
-                        <label class="field-label" for="model-selector">Image Engine</label>
-                        <select class="input-text" id="model-selector">
-                            <optgroup label="OpenAI">
-                                <option value="gpt-image-2" selected>GPT Image 2</option>
-                            </optgroup>
-                            <optgroup label="Google Gemini">
-                                <option value="gemini-3.1-flash-image">Gemini 3.1 Flash Image (Nano Banana 2)</option>
-                                <option value="gemini-3-pro-image">Gemini 3 Pro Image (Banana Pro)</option>
-                                <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (Nano Banana)</option>
-                            </optgroup>
-                            <optgroup label="Hugging Face Inference Providers">
-                                <option value="black-forest-labs/FLUX.1-Krea-dev">FLUX.1 Krea Dev</option>
-                                <option value="Qwen/Qwen-Image">Qwen Image</option>
-                                <option value="ByteDance/Hyper-SD">Hyper-SD</option>
-                            </optgroup>
-                        </select>
-                    </div>
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">2</span> Pick a style <span class="step-value" id="style-picked"></span></h2>
+                        <div class="chip-row" id="style-categories" role="tablist" aria-label="Style categories"></div>
+                        <div class="style-grid" id="style-grid"></div>
+                    </section>
+
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">3</span> Choose a shape</h2>
+                        <div class="shape-row" id="shape-row"></div>
+                    </section>
+
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">4</span> Choose an engine</h2>
+                        <div class="engine-list" id="engine-list"></div>
+                    </section>
+
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">5</span> Adding words later?</h2>
+                        <div class="segmented" id="text-space" role="radiogroup" aria-label="Leave room for text"></div>
+                        <p class="hint">We'll ask for calm, empty space there so your words stand out.</p>
+                    </section>
                 </div>
 
-                <!-- Tab: Typography Customize -->
-                <div class="panel-tab-content" id="tab-text">
-                    
-                    <!-- Header Settings -->
-                    <div class="field-group" style="border-bottom: 1px solid rgba(255, 255, 255, 0.04); padding-bottom: 1rem;">
-                        <div class="field-label">
-                            Header Overlay
-                            <input type="checkbox" id="header-active" checked>
-                        </div>
-                        <input type="text" class="input-text" id="header-text-input" value="DREAM BIG">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                            <select class="input-text" id="header-font">
-                                <option value="Outfit" selected>Outfit</option>
-                                <option value="Orbitron">Orbitron</option>
-                                <option value="Inter">Inter</option>
-                            </select>
-                            <select class="input-text" id="header-align">
-                                <option value="center" selected>Center</option>
-                                <option value="left">Left</option>
-                                <option value="right">Right</option>
-                            </select>
-                        </div>
-                        <div class="range-container" style="margin-top: 0.5rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Size:</span>
-                            <input type="range" class="range-slider" id="header-size" min="16" max="90" value="48">
-                            <span class="range-value" id="header-size-val">48px</span>
-                        </div>
-                        <div class="range-container">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Spacing:</span>
-                            <input type="range" class="range-slider" id="header-spacing" min="0" max="25" value="6">
-                            <span class="range-value" id="header-spacing-val">6px</span>
-                        </div>
-                        <div class="color-picker-container" style="margin-top: 0.5rem;">
-                            <div class="color-swatch active" style="background: #facc15;" data-color="#facc15"></div>
-                            <div class="color-swatch" style="background: #c084fc;" data-color="#c084fc"></div>
-                            <div class="color-swatch" style="background: #22d3ee;" data-color="#22d3ee"></div>
-                            <div class="color-swatch" style="background: #ffffff;" data-color="#ffffff"></div>
-                            <div class="custom-color-input">
-                                <input type="color" id="header-color-custom" value="#facc15">
-                            </div>
-                        </div>
-                        
-                        <!-- Header Extra Effects (Outline & BG Plate) -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.5rem;">
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="header-outline-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">Outline</span>
-                                <input type="color" id="header-outline-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="header-bg-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">BG Box</span>
-                                <input type="color" id="header-bg-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.25rem;">
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Stroke:</span>
-                                <input type="range" class="range-slider" id="header-outline-width" min="1" max="10" value="3">
-                            </div>
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Opacity:</span>
-                                <input type="range" class="range-slider" id="header-bg-opacity" min="0" max="100" value="50">
-                            </div>
-                        </div>
-                    </div>
+                <div class="panel-body" data-tab-panel="text" hidden id="text-panel"></div>
+                <div class="panel-body" data-tab-panel="adjust" hidden id="adjust-panel"></div>
 
-                    <!-- Body/Quote Settings -->
-                    <div class="field-group" style="border-bottom: 1px solid rgba(255, 255, 255, 0.04); padding-bottom: 1rem;">
-                        <div class="field-label">
-                            Motivational Message
-                            <input type="checkbox" id="quote-active" checked>
-                        </div>
-                        <textarea class="text-input" id="quote-text-input" style="min-height: 70px;">The only limit to our realization of tomorrow will be our doubts of today.</textarea>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                            <select class="input-text" id="quote-font">
-                                <option value="Playfair Display" selected>Playfair Display</option>
-                                <option value="Merriweather">Merriweather</option>
-                                <option value="Outfit">Outfit</option>
-                                <option value="Pacifico">Pacifico</option>
-                            </select>
-                            <select class="input-text" id="quote-align">
-                                <option value="center" selected>Center</option>
-                                <option value="left">Left</option>
-                                <option value="right">Right</option>
-                            </select>
-                        </div>
-                        <div class="range-container" style="margin-top: 0.5rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Size:</span>
-                            <input type="range" class="range-slider" id="quote-size" min="14" max="60" value="32">
-                            <span class="range-value" id="quote-size-val">32px</span>
-                        </div>
-                        <div class="range-container">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Line H:</span>
-                            <input type="range" class="range-slider" id="quote-lineheight" min="10" max="22" value="14" step="1">
-                            <span class="range-value" id="quote-lineheight-val">1.4</span>
-                        </div>
-                        <div class="color-picker-container" style="margin-top: 0.5rem;">
-                            <div class="color-swatch" style="background: #facc15;" data-color="#facc15"></div>
-                            <div class="color-swatch" style="background: #c084fc;" data-color="#c084fc"></div>
-                            <div class="color-swatch" style="background: #22d3ee;" data-color="#22d3ee"></div>
-                            <div class="color-swatch active" style="background: #ffffff;" data-color="#ffffff"></div>
-                            <div class="custom-color-input">
-                                <input type="color" id="quote-color-custom" value="#ffffff">
-                            </div>
-                        </div>
-                        
-                        <!-- Quote Extra Effects (Outline & BG Plate) -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.5rem;">
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="quote-outline-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">Outline</span>
-                                <input type="color" id="quote-outline-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="quote-bg-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">BG Box</span>
-                                <input type="color" id="quote-bg-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.25rem;">
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Stroke:</span>
-                                <input type="range" class="range-slider" id="quote-outline-width" min="1" max="10" value="3">
-                            </div>
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Opacity:</span>
-                                <input type="range" class="range-slider" id="quote-bg-opacity" min="0" max="100" value="50">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Footer Settings -->
-                    <div class="field-group">
-                        <div class="field-label">
-                            Signature / Author
-                            <input type="checkbox" id="author-active" checked>
-                        </div>
-                        <input type="text" class="input-text" id="author-text-input" value="- Franklin D. Roosevelt">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                            <select class="input-text" id="author-font">
-                                <option value="Inter" selected>Inter</option>
-                                <option value="Outfit">Outfit</option>
-                                <option value="Pacifico">Pacifico</option>
-                            </select>
-                            <select class="input-text" id="author-align">
-                                <option value="center" selected>Center</option>
-                                <option value="left">Left</option>
-                                <option value="right">Right</option>
-                            </select>
-                        </div>
-                        <div class="range-container" style="margin-top: 0.5rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Size:</span>
-                            <input type="range" class="range-slider" id="author-size" min="10" max="36" value="18">
-                            <span class="range-value" id="author-size-val">18px</span>
-                        </div>
-                        <div class="range-container">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary); width: 45px;">Spacing:</span>
-                            <input type="range" class="range-slider" id="author-spacing" min="0" max="16" value="2">
-                            <span class="range-value" id="author-spacing-val">2px</span>
-                        </div>
-                        <div class="color-picker-container" style="margin-top: 0.5rem;">
-                            <div class="color-swatch" style="background: #facc15;" data-color="#facc15"></div>
-                            <div class="color-swatch" style="background: #c084fc;" data-color="#c084fc"></div>
-                            <div class="color-swatch" style="background: #22d3ee;" data-color="#22d3ee"></div>
-                            <div class="color-swatch active" style="background: #a1a1aa;" data-color="#a1a1aa"></div>
-                            <div class="custom-color-input">
-                                <input type="color" id="author-color-custom" value="#a1a1aa">
-                            </div>
-                        </div>
-                        
-                        <!-- Author Extra Effects (Outline & BG Plate) -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.5rem;">
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="author-outline-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">Outline</span>
-                                <input type="color" id="author-outline-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 0.35rem;">
-                                <input type="checkbox" id="author-bg-active">
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">BG Box</span>
-                                <input type="color" id="author-bg-color" value="#000000" style="width:20px; height:20px; border:none; border-radius:3px; cursor:pointer;">
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.25rem;">
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Stroke:</span>
-                                <input type="range" class="range-slider" id="author-outline-width" min="1" max="10" value="3">
-                            </div>
-                            <div class="range-container">
-                                <span style="font-size: 0.7rem; color: var(--text-secondary); width: 35px;">Opacity:</span>
-                                <input type="range" class="range-slider" id="author-bg-opacity" min="0" max="100" value="50">
-                            </div>
-                        </div>
-                    </div>
-
+                <div class="panel-footer">
+                    <button class="btn btn-primary btn-block btn-large" id="generate-btn" type="button">
+                        <span id="generate-label">Create image</span>
+                        <span class="btn-cost" id="generate-cost"></span>
+                    </button>
+                    <p class="footer-note" id="footer-note"></p>
                 </div>
+            </aside>
 
-                <!-- Tab: Filters -->
-                <div class="panel-tab-content" id="tab-filters">
-                    
-                    <!-- Brightness -->
-                    <div class="field-group">
-                        <label class="field-label" for="filter-brightness">Brightness</label>
-                        <div class="range-container">
-                            <input type="range" class="range-slider" id="filter-brightness" min="20" max="150" value="85">
-                            <span class="range-value" id="filter-brightness-val">85%</span>
-                        </div>
-                    </div>
-
-                    <!-- Contrast -->
-                    <div class="field-group">
-                        <label class="field-label" for="filter-contrast">Contrast</label>
-                        <div class="range-container">
-                            <input type="range" class="range-slider" id="filter-contrast" min="50" max="150" value="105">
-                            <span class="range-value" id="filter-contrast-val">105%</span>
-                        </div>
-                    </div>
-
-                    <!-- Saturation -->
-                    <div class="field-group">
-                        <label class="field-label" for="filter-saturation">Saturation</label>
-                        <div class="range-container">
-                            <input type="range" class="range-slider" id="filter-saturation" min="0" max="200" value="90">
-                            <span class="range-value" id="filter-saturation-val">90%</span>
-                        </div>
-                    </div>
-
-                    <!-- Blur -->
-                    <div class="field-group">
-                        <label class="field-label" for="filter-blur">Soft Blur</label>
-                        <div class="range-container">
-                            <input type="range" class="range-slider" id="filter-blur" min="0" max="15" value="1">
-                            <span class="range-value" id="filter-blur-val">1px</span>
-                        </div>
-                    </div>
-
-                    <!-- Vignette -->
-                    <div class="field-group">
-                        <label class="field-label" for="filter-vignette">Edges Vignette (Darkening)</label>
-                        <div class="range-container">
-                            <input type="range" class="range-slider" id="filter-vignette" min="0" max="100" value="40">
-                            <span class="range-value" id="filter-vignette-val">40%</span>
-                        </div>
-                    </div>
-
-                </div>
-
-                <!-- Generate CTA Trigger Button -->
-                <button class="generate-btn" id="generate-btn">
-                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-                    Synthesize Image
-                </button>
-            </div>
-
-            <!-- Right Side Editor Workspace -->
-            <div class="editor-container">
-                <!-- Instruction Drag Helper Overlay (Only visible when image loaded) -->
-                <div class="drag-hint" id="drag-hint" style="display:none;">
-                    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M16 15l-4 4-4-4"/></svg>
-                    Tip: Drag text layers up and down on the canvas to layout
-                </div>
-
-                <!-- Loading State Overlay -->
-                <div class="loading-overlay" id="loading-overlay">
-                    <div class="banana-spinner">
-                        <!-- Custom dynamic banana path spinner SVG -->
-                        <svg viewBox="0 0 100 100">
-                            <path fill="none" stroke="#facc15" stroke-width="6" stroke-linecap="round" d="M 50 15 A 35 35 0 0 1 85 50" />
-                            <path fill="none" stroke="#a855f7" stroke-width="6" stroke-linecap="round" d="M 50 85 A 35 35 0 0 1 15 50" />
-                            <!-- A literal banana icon floating inside -->
-                            <path fill="#facc15" d="M 50,30 C 58,30 65,37 65,45 C 65,48 60,55 50,65 C 40,55 35,48 35,45 C 35,37 42,30 50,30 Z" transform="scale(0.7) translate(22, 22)"/>
-                        </svg>
-                    </div>
-                    <div class="loading-text" id="loading-status-text">Synthesizing Pixels...</div>
-                    <button class="loading-cancel-btn" id="cancel-generation-btn" type="button">Cancel Generation</button>
-                </div>
-
-                <!-- Canvas Viewport -->
-                <div class="canvas-viewport" id="canvas-viewport">
-                    <canvas id="main-canvas" width="1024" height="1024"></canvas>
-                    
-                    <!-- Floating Context Actions -->
-                    <div class="canvas-actions">
-                        <button class="canvas-act-btn" id="reset-editor-btn" title="Reset positions & filters">
-                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <div class="stage">
+                <div class="stage-toolbar" id="stage-toolbar" hidden>
+                    <div class="toolbar-group">
+                        <button class="icon-btn" id="undo-btn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
                         </button>
-                        <button class="canvas-act-btn share" id="share-canvas-btn" title="Copy to Clipboard / System Share">
-                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                        <button class="icon-btn" id="redo-btn" type="button" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
                         </button>
-                        <button class="canvas-act-btn primary" id="save-gallery-btn" title="Save to Creations Gallery">
-                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                        <button class="btn btn-soft btn-small" id="add-text-btn" type="button">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+                            Add text
                         </button>
-                        <button class="canvas-act-btn" id="download-canvas-btn" title="Download PNG">
-                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                    </div>
+                    <div class="toolbar-group">
+                        <button class="btn btn-ghost btn-small" id="new-image-btn" type="button">New image</button>
+                        <button class="icon-btn" id="share-btn" type="button" title="Share or copy" aria-label="Share">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v13"/></svg>
+                        </button>
+                        <button class="btn btn-soft btn-small" id="download-btn" type="button">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                            Download
+                        </button>
+                        <button class="btn btn-primary btn-small" id="save-btn" type="button">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+                            <span id="save-label">Save to My Art</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Empty Placeholder -->
-                <div class="editor-placeholder" id="editor-placeholder">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                        <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-                        <line x1="12" y1="22.08" x2="12" y2="12" />
-                    </svg>
-                    <h3>Studio Workspace</h3>
-                    <p>Choose a server-configured image engine, type a message prompt, and click "Synthesize Image" to start designing.</p>
+                <div class="stage-frame" id="stage-frame">
+                    <canvas id="main-canvas" tabindex="0" aria-label="Artwork canvas. Drag text to move it." hidden></canvas>
+
+                    <div class="stage-empty" id="stage-empty">
+                        <div class="empty-art" aria-hidden="true">
+                            <span style="--c1:#e9967a;--c2:#3f6e9e"></span>
+                            <span style="--c1:#f2d27a;--c2:#81b29a"></span>
+                            <span style="--c1:#c3b1e1;--c2:#ffd6e0"></span>
+                        </div>
+                        <h1 class="empty-title">Make something beautiful</h1>
+                        <p class="empty-copy">Describe a scene, choose an art style, and we'll paint it. Then add your own words, adjust the look, and download it for printing or sharing.</p>
+                        <ol class="empty-steps">
+                            <li><strong>Describe</strong> it in your own words</li>
+                            <li><strong>Pick</strong> from 30+ art styles</li>
+                            <li><strong>Add</strong> a title, greeting, or quote</li>
+                        </ol>
+                    </div>
+
+                    <div class="stage-loading" id="stage-loading" hidden>
+                        <div class="paint-spinner" aria-hidden="true"><span></span><span></span><span></span></div>
+                        <p class="loading-message" id="loading-message">Mixing the paints…</p>
+                        <p class="loading-elapsed" id="loading-elapsed"></p>
+                        <button class="btn btn-ghost btn-small" id="cancel-btn" type="button">Cancel</button>
+                    </div>
                 </div>
-            </div>
-        </section>
 
-        <!-- View 2: Gallery -->
-        <section class="view-section" id="gallery-view">
-            <div class="gallery-header">
-                <h2 class="gallery-title">Creations Gallery</h2>
-            </div>
-            <div id="gallery-container">
-                <!-- Rendered dynamically -->
-            </div>
-        </section>
-
-        <!-- View 3: Server Status -->
-        <section class="view-section" id="settings-view">
-            <div class="settings-card">
-                <h2 class="settings-title">Account & Server Status</h2>
-                <p class="settings-intro">
-                    Sign in to save creations to your account and use server-side provider integrations.
-                    Provider keys are configured on the server, never in the browser.
+                <p class="stage-hint" id="stage-hint" hidden>
+                    Drag text to move it. Use the corner handle to resize and the top handle to rotate. Double-click text to edit.
                 </p>
-
-                <div class="account-panel">
-                    <div class="server-status-row">
-                        <span>Signed-in account</span>
-                        <strong id="account-status-text">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Email status</span>
-                        <strong id="email-status-text">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Current plan</span>
-                        <strong id="plan-status-text">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Billing status</span>
-                        <strong id="billing-status-text">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Monthly generations</span>
-                        <strong id="quota-status-text">Checking...</strong>
-                    </div>
-                    <div class="auth-grid" id="auth-form">
-                        <input type="email" class="input-text" id="auth-email-input" placeholder="email@example.com" autocomplete="email">
-                        <input type="password" class="input-text" id="auth-password-input" placeholder="Password" autocomplete="current-password">
-                        <button class="settings-save-btn" id="sign-in-btn" type="button">Sign In</button>
-                        <button class="settings-save-btn secondary" id="sign-up-btn" type="button">Create Account</button>
-                    </div>
-                    <button class="settings-save-btn secondary" id="request-password-reset-btn" type="button">Request Password Reset</button>
-                    <div class="auth-grid" id="reset-password-panel" style="display: none;">
-                        <input type="password" class="input-text" id="reset-password-input" placeholder="New password" autocomplete="new-password">
-                        <button class="settings-save-btn" id="reset-password-submit-btn" type="button">Set New Password</button>
-                    </div>
-                    <button class="settings-save-btn secondary" id="sign-out-btn" type="button" style="display: none;">Sign Out</button>
-                    <button class="settings-save-btn secondary" id="send-verification-btn" type="button" style="display: none;">Send Verification Link</button>
-                    <div class="billing-actions" id="billing-actions" style="display: none;">
-                        <button class="settings-save-btn" id="upgrade-plan-btn" type="button">Upgrade to Pro</button>
-                        <button class="settings-save-btn secondary" id="manage-billing-btn" type="button" disabled>Manage Billing</button>
-                    </div>
-                </div>
-
-                <div class="server-status-list">
-                    <div class="server-status-row">
-                        <span>OpenAI GPT Image</span>
-                        <strong id="status-openai">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Google Gemini / Nano Banana</span>
-                        <strong id="status-gemini">Checking...</strong>
-                    </div>
-                    <div class="server-status-row">
-                        <span>Hugging Face Inference Providers</span>
-                        <strong id="status-huggingface">Checking...</strong>
-                    </div>
-                </div>
-
-                <button class="settings-save-btn" id="refresh-status-btn" style="margin-top: 1.5rem;">Refresh Status</button>
             </div>
         </section>
 
-        <!-- View 4: Admin Operations -->
-        <section class="view-section" id="admin-view">
-            <div class="admin-shell">
-                <div class="admin-header">
+        <!-- My Art -->
+        <section class="view" id="view-gallery" data-view="gallery">
+            <div class="page">
+                <div class="page-header">
                     <div>
-                        <h2 class="gallery-title">Admin Operations</h2>
-                        <p class="settings-intro">Review usage, failed jobs, reports, and local policy events with a server-configured admin token.</p>
+                        <h1 class="page-title">My Art</h1>
+                        <p class="page-subtitle" id="gallery-subtitle">Everything you've saved lives here.</p>
                     </div>
-                    <button class="settings-save-btn secondary admin-refresh-btn" id="admin-refresh-btn" type="button">Refresh</button>
+                    <button class="btn btn-primary" type="button" data-nav="create">Create new</button>
                 </div>
-
-                <div class="admin-auth-card" id="admin-auth-card">
-                    <input type="password" class="input-text" id="admin-token-input" placeholder="Admin API token" autocomplete="off">
-                    <button class="settings-save-btn" id="admin-connect-btn" type="button">Connect Admin</button>
-                </div>
-
-                <div class="admin-dashboard" id="admin-dashboard" hidden>
-                    <div class="admin-metrics" id="admin-metrics"></div>
-
-                    <div class="admin-grid">
-                        <section class="admin-panel">
-                            <h3>Recent Jobs</h3>
-                            <div class="admin-list" id="admin-jobs-list"></div>
-                        </section>
-                        <section class="admin-panel">
-                            <h3>Abuse Reports</h3>
-                            <div class="admin-list" id="admin-reports-list"></div>
-                        </section>
-                        <section class="admin-panel wide">
-                            <h3>Policy Events</h3>
-                            <div class="admin-list" id="admin-policy-list"></div>
-                        </section>
-                    </div>
-                </div>
+                <div id="gallery-container"></div>
             </div>
         </section>
 
+        <!-- Account -->
+        <section class="view" id="view-account" data-view="account">
+            <div class="page page-narrow" id="account-container"></div>
+        </section>
+
+        <!-- Admin (reach via #admin) -->
+        <section class="view" id="view-admin" data-view="admin">
+            <div class="page" id="admin-container"></div>
+        </section>
     </main>
 
-    <!-- Toast Notification Container -->
-    <div id="toast-container"></div>
+    <!-- Sign in / sign up -->
+    <dialog class="dialog" id="auth-dialog" aria-labelledby="auth-title">
+        <form class="dialog-card" id="auth-form" method="dialog" novalidate>
+            <button class="dialog-close" type="button" data-close aria-label="Close">&times;</button>
+            <h2 class="dialog-title" id="auth-title">Create your free account</h2>
+            <p class="dialog-copy" id="auth-copy"></p>
+            <label class="label" for="auth-email">Email</label>
+            <input class="field" id="auth-email" type="email" autocomplete="email" required>
+            <label class="label" for="auth-password">Password</label>
+            <input class="field" id="auth-password" type="password" autocomplete="new-password" minlength="8" required>
+            <p class="form-error" id="auth-error" role="alert"></p>
+            <button class="btn btn-primary btn-block" id="auth-submit" type="submit">Create account</button>
+            <div class="dialog-links">
+                <button class="link-btn" id="auth-switch" type="button">Already have an account? Sign in</button>
+                <button class="link-btn" id="auth-forgot" type="button" hidden>Forgot password?</button>
+            </div>
+        </form>
+    </dialog>
+
+    <!-- Set a new password (from an emailed reset link) -->
+    <dialog class="dialog" id="reset-dialog" aria-labelledby="reset-title">
+        <form class="dialog-card" id="reset-form" method="dialog" novalidate>
+            <button class="dialog-close" type="button" data-close aria-label="Close">&times;</button>
+            <h2 class="dialog-title" id="reset-title">Choose a new password</h2>
+            <label class="label" for="reset-password">New password</label>
+            <input class="field" id="reset-password" type="password" autocomplete="new-password" minlength="8" required>
+            <p class="form-error" id="reset-error" role="alert"></p>
+            <button class="btn btn-primary btn-block" type="submit">Save new password</button>
+        </form>
+    </dialog>
+
+    <!-- Buy credits / subscribe -->
+    <dialog class="dialog dialog-wide" id="paywall-dialog" aria-labelledby="paywall-title">
+        <div class="dialog-card" id="paywall-content"></div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
     <script type="module" src="app.js"></script>
 </body>

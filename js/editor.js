@@ -1,517 +1,843 @@
+import { buildCanvasFont, ensureFontsLoaded } from './fonts.js';
+import { DEFAULT_FILTERS, createLayer, createLayerId, normalizeFilters, normalizeLayer } from './presets.js';
+
+const HISTORY_LIMIT = 80;
+const SNAP_TOLERANCE = 0.015;
+const HANDLE_RADIUS = 9;
+const ROTATE_HANDLE_OFFSET = 30;
+
+const supportsCanvasFilter = (() => {
+    try {
+        const ctx = document.createElement('canvas').getContext('2d');
+        if (typeof ctx.filter !== 'string') return false;
+        ctx.filter = 'blur(1px)';
+        return ctx.filter === 'blur(1px)';
+    } catch {
+        return false;
+    }
+})();
+
+const supportsLetterSpacing = typeof CanvasRenderingContext2D !== 'undefined'
+    && 'letterSpacing' in CanvasRenderingContext2D.prototype;
+
 /**
- * CanvasEditor - Interactive HTML5 Canvas motivational message compositor
+ * Layered canvas compositor: a background image with photo adjustments plus any number of
+ * free-form text layers. Emits:
+ *   change    the design changed (layers or filters)
+ *   select    the selected layer changed (detail: { id })
+ *   history   undo/redo availability changed
+ *   edittext  the user double-clicked a layer (detail: { id })
  */
-export class CanvasEditor {
-    constructor(canvasElement) {
-        this.canvas = canvasElement;
-        this.ctx = this.canvas.getContext('2d');
-        this.backgroundImage = null;
-        
-        // Editor State
-        this.state = {
-            // Text Overlays
-            overlays: {
-                header: {
-                    text: 'DREAM BIG',
-                    active: true,
-                    yPct: 0.20, // vertical position as % of canvas height
-                    fontFamily: 'Outfit',
-                    fontSize: 48,
-                    fontWeight: '800',
-                    color: '#facc15',
-                    alignment: 'center',
-                    letterSpacing: 6,
-                    lineHeight: 1.2,
-                    shadowBlur: 8,
-                    shadowColor: '#000000',
-                    outlineActive: false,
-                    outlineColor: '#000000',
-                    outlineWidth: 3,
-                    bgActive: false,
-                    bgColor: '#000000',
-                    bgOpacity: 50
-                },
-                quote: {
-                    text: 'The only limit to our realization of tomorrow will be our doubts of today.',
-                    active: true,
-                    yPct: 0.50,
-                    fontFamily: 'Playfair Display',
-                    fontSize: 32,
-                    fontWeight: '600',
-                    color: '#ffffff',
-                    alignment: 'center',
-                    letterSpacing: 1,
-                    lineHeight: 1.4,
-                    shadowBlur: 10,
-                    shadowColor: '#000000',
-                    outlineActive: false,
-                    outlineColor: '#000000',
-                    outlineWidth: 3,
-                    bgActive: false,
-                    bgColor: '#000000',
-                    bgOpacity: 50
-                },
-                author: {
-                    text: '- Franklin D. Roosevelt',
-                    active: true,
-                    yPct: 0.78,
-                    fontFamily: 'Inter',
-                    fontSize: 18,
-                    fontWeight: '400',
-                    color: '#a1a1aa',
-                    alignment: 'center',
-                    letterSpacing: 2,
-                    lineHeight: 1.2,
-                    shadowBlur: 6,
-                    shadowColor: '#000000',
-                    outlineActive: false,
-                    outlineColor: '#000000',
-                    outlineWidth: 3,
-                    bgActive: false,
-                    bgColor: '#000000',
-                    bgOpacity: 50
-                }
-            },
-            // Filters
-            filters: {
-                brightness: 85, // %
-                contrast: 105,   // %
-                saturation: 90, // %
-                blur: 1,        // px
-                vignette: 0.4   // opacity (0 to 1)
-            }
-        };
+export class CanvasEditor extends EventTarget {
+    constructor(canvas) {
+        super();
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.image = null;
+        this.imageObjectUrl = null;
+        this.layers = [];
+        this.filters = { ...DEFAULT_FILTERS };
+        this.selectedId = null;
+        this.backgroundCache = null;
+        this.backgroundCacheKey = '';
+        this.guides = { x: false, y: false };
+        this.interaction = null;
+        this.history = [];
+        this.future = [];
+        this.renderQueued = false;
+        this.commitTimer = null;
 
-        // Interaction State
-        this.draggedKey = null;
-        this.isDragging = false;
-
-        this.initEvents();
+        this.bindPointerEvents();
+        document.fonts?.addEventListener?.('loadingdone', () => this.requestRender());
     }
 
-    /**
-     * Set the current background image from a base64 DataURL or Image object
-     * @param {string|Image} imgSource 
-     * @returns {Promise} Resolves when the image is loaded and drawn
-     */
-    async loadImage(imgSource) {
-        const resolvedSource = await this.resolveImageSource(imgSource);
-
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            if (typeof resolvedSource === 'string' && /^https?:\/\//.test(resolvedSource)) {
-                img.crossOrigin = 'anonymous';
-            }
-            img.onload = () => {
-                this.backgroundImage = img;
-                // Set canvas internal resolution to match generated image (typically 1024x1024 or similar)
-                this.canvas.width = img.naturalWidth || 1024;
-                this.canvas.height = img.naturalHeight || 1024;
-                this.draw();
-                resolve();
-            };
-            img.onerror = (err) => {
-                reject(err);
-            };
-            
-            if (typeof resolvedSource === 'string') {
-                img.src = resolvedSource;
-            } else if (resolvedSource instanceof Image) {
-                img.src = resolvedSource.src;
-            } else {
-                reject(new Error('Invalid image source'));
-            }
-        });
+    get hasImage() {
+        return Boolean(this.image);
     }
 
-    async resolveImageSource(imgSource) {
-        if (typeof imgSource === 'string' && imgSource.startsWith('/api/assets/')) {
-            const response = await fetch(imgSource, { credentials: 'same-origin' });
+    get selectedLayer() {
+        return this.layers.find((layer) => layer.id === this.selectedId) || null;
+    }
+
+    get canUndo() {
+        return this.history.length > 1;
+    }
+
+    get canRedo() {
+        return this.future.length > 0;
+    }
+
+    /** Load a background image. Protected /api/assets URLs are fetched with the session cookie. */
+    async loadImage(source) {
+        let src = source;
+        let objectUrl = null;
+        if (typeof source === 'string' && source.startsWith('/api/assets/')) {
+            const response = await fetch(source, { credentials: 'same-origin' });
             if (!response.ok) {
-                throw new Error('Failed to load stored image asset.');
+                throw new Error('Could not load that image. Please sign in again.');
             }
-            const blob = await response.blob();
-            return URL.createObjectURL(blob);
+            objectUrl = URL.createObjectURL(await response.blob());
+            src = objectUrl;
         }
 
-        return imgSource;
-    }
-
-    /**
-     * Update filter configurations
-     */
-    updateFilter(filterName, value) {
-        if (filterName in this.state.filters) {
-            this.state.filters[filterName] = Number(value);
-            this.draw();
-        }
-    }
-
-    /**
-     * Update text overlay properties
-     */
-    updateOverlay(key, properties) {
-        if (key in this.state.overlays) {
-            this.state.overlays[key] = {
-                ...this.state.overlays[key],
-                ...properties
-            };
-            this.draw();
-        }
-    }
-
-    /**
-     * Render everything onto the canvas
-     */
-    draw() {
-        if (!this.backgroundImage) return;
-
-        const width = this.canvas.width;
-        const height = this.canvas.height;
-
-        // Clear canvas
-        this.ctx.clearRect(0, 0, width, height);
-
-        // 1. Draw Background Image with Filters
-        this.ctx.save();
-        const f = this.state.filters;
-        this.ctx.filter = `brightness(${f.brightness}%) contrast(${f.contrast}%) saturate(${f.saturation}%) blur(${f.blur}px)`;
-        this.ctx.drawImage(this.backgroundImage, 0, 0, width, height);
-        this.ctx.restore();
-
-        // 2. Draw Vignette Overlay (always drawn on top of background filters, below text)
-        if (f.vignette > 0) {
-            this.drawVignette(width, height, f.vignette);
-        }
-
-        // 3. Draw Text Overlays
-        for (const overlay of Object.values(this.state.overlays)) {
-            if (!overlay.active || !overlay.text.trim()) continue;
-            this.drawTextOverlay(overlay, width, height);
-        }
-    }
-
-    /**
-     * Draw radial vignette overlay
-     */
-    drawVignette(width, height, strength) {
-        this.ctx.save();
-        const centerX = width / 2;
-        const centerY = height / 2;
-        const innerRadius = Math.min(width, height) * 0.25;
-        const outerRadius = Math.max(width, height) * 0.7;
-
-        const gradient = this.ctx.createRadialGradient(
-            centerX, centerY, innerRadius,
-            centerX, centerY, outerRadius
-        );
-
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        gradient.addColorStop(1, `rgba(0, 0, 0, ${strength})`);
-
-        this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(0, 0, width, height);
-        this.ctx.restore();
-    }
-
-    /**
-     * Draw single text overlay block with word wrapping
-     */
-    drawTextOverlay(overlay, canvasWidth, canvasHeight) {
-        this.ctx.save();
-
-        const x = canvasWidth / 2; // Default horizontal centering
-        const y = canvasHeight * overlay.yPct;
-
-        // Configure typography
-        this.ctx.font = `${overlay.fontWeight} ${overlay.fontSize}px ${overlay.fontFamily}`;
-        this.ctx.fillStyle = overlay.color;
-        this.ctx.textAlign = overlay.alignment;
-        this.ctx.textBaseline = 'middle';
-
-        // Word wrapping
-        const maxTextWidth = canvasWidth * 0.85; // Padding left & right
-        const wrappedLines = this.wrapText(overlay.text, maxTextWidth);
-        const lineHeight = overlay.fontSize * overlay.lineHeight;
-        const totalHeight = wrappedLines.length * lineHeight;
-        
-        // Draw each line centered vertically around the overlay's anchor Y position
-        const yStart = y - (totalHeight / 2) + (lineHeight / 2);
-
-        // Calculate and draw background backing box if active
-        if (overlay.bgActive && overlay.bgOpacity > 0) {
-            let maxLineWidth = 0;
-            wrappedLines.forEach(line => {
-                let w;
-                if (overlay.letterSpacing > 0) {
-                    const chars = line.split('');
-                    w = this.ctx.measureText(line).width + (chars.length - 1) * overlay.letterSpacing;
-                } else {
-                    w = this.ctx.measureText(line).width;
-                }
-                if (w > maxLineWidth) maxLineWidth = w;
-            });
-
-            const padX = overlay.fontSize * 0.5;
-            const padY = overlay.fontSize * 0.35;
-            const boxWidth = maxLineWidth + padX * 2;
-            const boxHeight = totalHeight + padY * 2;
-            const boxY = y - (totalHeight / 2) - padY;
-            
-            let boxX;
-            if (overlay.alignment === 'center') {
-                boxX = x - (boxWidth / 2);
-            } else if (overlay.alignment === 'left') {
-                boxX = (canvasWidth * 0.075) - padX;
-            } else { // right
-                boxX = (canvasWidth * 0.925) - boxWidth + padX;
-            }
-
-            this.ctx.save();
-            this.ctx.fillStyle = overlay.bgColor || '#000000';
-            this.ctx.globalAlpha = (overlay.bgOpacity || 50) / 100;
-            
-            const radius = 8;
-            this.ctx.beginPath();
-            if (typeof this.ctx.roundRect === 'function') {
-                this.ctx.roundRect(boxX, boxY, boxWidth, boxHeight, radius);
-            } else {
-                this.ctx.rect(boxX, boxY, boxWidth, boxHeight);
-            }
-            this.ctx.fill();
-            this.ctx.restore();
-        }
-
-        // Configure Text Shadow/Glow (for contrast against backgrounds, applied on top of the BG box)
-        if (overlay.shadowBlur > 0) {
-            this.ctx.shadowColor = overlay.shadowColor;
-            this.ctx.shadowBlur = overlay.shadowBlur;
-            this.ctx.shadowOffsetX = 0;
-            this.ctx.shadowOffsetY = 2;
-        }
-
-        wrappedLines.forEach((line, index) => {
-            const currentY = yStart + (index * lineHeight);
-            
-            // Adjust X alignment offsets if needed (for left/right options)
-            let drawX = x;
-            if (overlay.alignment === 'left') {
-                drawX = canvasWidth * 0.075;
-            } else if (overlay.alignment === 'right') {
-                drawX = canvasWidth * 0.925;
-            }
-
-            // Draw outline first if enabled so the fill draws neatly on top
-            if (overlay.outlineActive) {
-                this.ctx.save();
-                this.ctx.strokeStyle = overlay.outlineColor || '#000000';
-                this.ctx.lineWidth = overlay.outlineWidth || 3;
-                this.ctx.lineJoin = 'round';
-                this.ctx.shadowBlur = 0; // Disable shadow on stroke to avoid blurred outline overlaps
-                
-                if (overlay.letterSpacing > 0) {
-                    this.strokeTextWithSpacing(line, drawX, currentY, overlay.letterSpacing, overlay.alignment);
-                } else {
-                    this.ctx.strokeText(line, drawX, currentY);
-                }
-                this.ctx.restore();
-            }
-
-            // Implement custom letter spacing for fill
-            if (overlay.letterSpacing > 0 && this.ctx.fillText) {
-                this.fillTextWithSpacing(line, drawX, currentY, overlay.letterSpacing, overlay.alignment);
-            } else {
-                this.ctx.fillText(line, drawX, currentY);
-            }
+        const image = await new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('The image could not be opened.'));
+            img.src = src;
         });
 
-        this.ctx.restore();
+        if (this.imageObjectUrl) {
+            URL.revokeObjectURL(this.imageObjectUrl);
+        }
+        this.imageObjectUrl = objectUrl;
+        this.image = image;
+        this.canvas.width = image.naturalWidth || 1024;
+        this.canvas.height = image.naturalHeight || 1024;
+        this.backgroundCache = null;
+        this.backgroundCacheKey = '';
+        this.render();
     }
 
-    /**
-     * Helper to draw text with custom letter-spacing
-     */
-    fillTextWithSpacing(text, x, y, letterSpacing, alignment) {
-        const characters = text.split('');
-        const totalWidth = this.ctx.measureText(text).width + (characters.length - 1) * letterSpacing;
-        
-        let currentX = x;
-        if (alignment === 'center') {
-            currentX = x - (totalWidth / 2);
-        } else if (alignment === 'right') {
-            currentX = x - totalWidth;
-        }
+    getDesign() {
+        return {
+            version: 2,
+            layers: this.layers.map((layer) => structuredClone(layer)),
+            filters: { ...this.filters }
+        };
+    }
 
-        for (let i = 0; i < characters.length; i++) {
-            const char = characters[i];
-            this.ctx.fillText(char, currentX, y);
-            currentX += this.ctx.measureText(char).width + letterSpacing;
+    async setDesign(design, { resetHistory = true } = {}) {
+        this.layers = (design?.layers || []).map((layer) => normalizeLayer(layer));
+        this.filters = normalizeFilters(design?.filters);
+        this.selectedId = null;
+        if (resetHistory) {
+            this.history = [];
+            this.future = [];
+        }
+        this.commit({ silent: true });
+        this.render();
+        this.emitSelection();
+        await ensureFontsLoaded(this.layers);
+        this.render();
+    }
+
+    addLayer(overrides = {}) {
+        return this.addLayers([overrides])[0];
+    }
+
+    addLayers(list) {
+        const created = list.map((overrides) => createLayer(overrides));
+        this.layers.push(...created);
+        this.selectedId = created.at(-1)?.id || this.selectedId;
+        this.afterMutation({ commit: true, fonts: created });
+        this.emitSelection();
+        return created;
+    }
+
+    updateLayer(id, patch, { commit = 'debounced' } = {}) {
+        const index = this.layers.findIndex((layer) => layer.id === id);
+        if (index === -1) return;
+
+        const current = this.layers[index];
+        const next = { ...current, ...patch };
+        for (const key of ['shadow', 'outline', 'background']) {
+            if (patch[key]) {
+                next[key] = { ...current[key], ...patch[key] };
+            }
+        }
+        this.layers[index] = normalizeLayer(next);
+
+        const fontChanged = ['family', 'weight', 'italic'].some((key) => key in patch);
+        this.afterMutation({ commit, fonts: fontChanged ? [this.layers[index]] : null });
+    }
+
+    removeLayer(id) {
+        this.layers = this.layers.filter((layer) => layer.id !== id);
+        if (this.selectedId === id) {
+            this.selectedId = null;
+            this.emitSelection();
+        }
+        this.afterMutation({ commit: true });
+    }
+
+    duplicateLayer(id) {
+        const source = this.layers.find((layer) => layer.id === id);
+        if (!source) return null;
+        const copy = normalizeLayer({
+            ...structuredClone(source),
+            id: createLayerId(),
+            x: Math.min(1, source.x + 0.03),
+            y: Math.min(1, source.y + 0.03)
+        });
+        this.layers.push(copy);
+        this.selectedId = copy.id;
+        this.afterMutation({ commit: true });
+        this.emitSelection();
+        return copy;
+    }
+
+    /** Move a layer up (toward the front) or down in the stacking order. */
+    reorderLayer(id, direction) {
+        const index = this.layers.findIndex((layer) => layer.id === id);
+        const target = direction === 'up' ? index + 1 : index - 1;
+        if (index === -1 || target < 0 || target >= this.layers.length) return;
+        [this.layers[index], this.layers[target]] = [this.layers[target], this.layers[index]];
+        this.afterMutation({ commit: true });
+    }
+
+    select(id) {
+        const next = this.layers.some((layer) => layer.id === id) ? id : null;
+        if (next === this.selectedId) return;
+        this.selectedId = next;
+        this.emitSelection();
+        this.requestRender();
+    }
+
+    setFilters(patch, { commit = 'debounced' } = {}) {
+        this.filters = normalizeFilters({ ...this.filters, ...patch });
+        this.afterMutation({ commit });
+    }
+
+    resetFilters() {
+        this.filters = { ...DEFAULT_FILTERS };
+        this.afterMutation({ commit: true });
+    }
+
+    undo() {
+        if (!this.canUndo) return;
+        this.flushPendingCommit();
+        this.future.push(this.history.pop());
+        this.restoreSnapshot(this.history.at(-1));
+    }
+
+    redo() {
+        if (!this.canRedo) return;
+        const snapshot = this.future.pop();
+        this.history.push(snapshot);
+        this.restoreSnapshot(snapshot);
+    }
+
+    commit({ silent = false } = {}) {
+        clearTimeout(this.commitTimer);
+        this.commitTimer = null;
+        const snapshot = JSON.stringify({ layers: this.layers, filters: this.filters });
+        if (this.history.at(-1) === snapshot) return;
+        this.history.push(snapshot);
+        if (this.history.length > HISTORY_LIMIT) {
+            this.history.shift();
+        }
+        this.future = [];
+        if (!silent) {
+            this.dispatchEvent(new Event('history'));
         }
     }
 
-    /**
-     * Helper to stroke text with custom letter-spacing
-     */
-    strokeTextWithSpacing(text, x, y, letterSpacing, alignment) {
-        const characters = text.split('');
-        const totalWidth = this.ctx.measureText(text).width + (characters.length - 1) * letterSpacing;
-        
-        let currentX = x;
-        if (alignment === 'center') {
-            currentX = x - (totalWidth / 2);
-        } else if (alignment === 'right') {
-            currentX = x - totalWidth;
-        }
-
-        for (let i = 0; i < characters.length; i++) {
-            const char = characters[i];
-            this.ctx.strokeText(char, currentX, y);
-            currentX += this.ctx.measureText(char).width + letterSpacing;
+    flushPendingCommit() {
+        if (this.commitTimer) {
+            this.commit();
         }
     }
 
-    /**
-     * Helper to split string into wrapped lines
-     */
-    wrapText(text, maxWidth) {
-        const words = text.split(' ');
-        const lines = [];
-        let currentLine = '';
+    /** Resolve once every layer's web font is ready, so exports never bake in a fallback font. */
+    fontsReady() {
+        return ensureFontsLoaded(this.layers);
+    }
 
-        for (let i = 0; i < words.length; i++) {
-            const word = words[i];
-            const testLine = currentLine ? `${currentLine} ${word}` : word;
-            const metrics = this.ctx.measureText(testLine);
-            
-            if (metrics.width > maxWidth && i > 0) {
-                lines.push(currentLine);
-                currentLine = word;
+    /** Render the finished artwork (no selection chrome) at full resolution. */
+    exportBlob(type = 'image/png', quality = 0.95) {
+        const canvas = this.renderExportCanvas();
+        return new Promise((resolve, reject) => {
+            canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Export failed.'))), type, quality);
+        });
+    }
+
+    exportDataUrl(type = 'image/png', quality = 0.95) {
+        return this.renderExportCanvas().toDataURL(type, quality);
+    }
+
+    clear() {
+        this.image = null;
+        this.layers = [];
+        this.filters = { ...DEFAULT_FILTERS };
+        this.selectedId = null;
+        this.history = [];
+        this.future = [];
+        this.backgroundCache = null;
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    // ----- internals -----
+
+    afterMutation({ commit, fonts }) {
+        this.requestRender();
+        this.dispatchEvent(new Event('change'));
+        if (commit === true) {
+            this.commit();
+        } else if (commit === 'debounced') {
+            clearTimeout(this.commitTimer);
+            this.commitTimer = setTimeout(() => this.commit(), 450);
+        }
+        if (fonts?.length) {
+            ensureFontsLoaded(fonts).then(() => this.requestRender());
+        }
+    }
+
+    restoreSnapshot(snapshot) {
+        const parsed = JSON.parse(snapshot);
+        this.layers = parsed.layers.map((layer) => normalizeLayer(layer));
+        this.filters = normalizeFilters(parsed.filters);
+        if (!this.layers.some((layer) => layer.id === this.selectedId)) {
+            this.selectedId = null;
+        }
+        this.requestRender();
+        this.emitSelection();
+        this.dispatchEvent(new Event('change'));
+        this.dispatchEvent(new Event('history'));
+    }
+
+    emitSelection() {
+        this.dispatchEvent(new CustomEvent('select', { detail: { id: this.selectedId } }));
+    }
+
+    requestRender() {
+        if (this.renderQueued) return;
+        this.renderQueued = true;
+        requestAnimationFrame(() => {
+            this.renderQueued = false;
+            this.render();
+        });
+    }
+
+    render() {
+        if (!this.image) return;
+        this.renderTo(this.ctx, this.canvas.width, this.canvas.height, { showChrome: true });
+    }
+
+    renderExportCanvas() {
+        const canvas = document.createElement('canvas');
+        canvas.width = this.canvas.width;
+        canvas.height = this.canvas.height;
+        this.renderTo(canvas.getContext('2d'), canvas.width, canvas.height, { showChrome: false });
+        return canvas;
+    }
+
+    renderTo(ctx, width, height, { showChrome }) {
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(this.getFilteredBackground(width, height), 0, 0);
+
+        if (this.filters.vignette > 0) {
+            drawVignette(ctx, width, height, this.filters.vignette);
+        }
+
+        for (const layer of this.layers) {
+            drawTextLayer(ctx, layer, width, height);
+        }
+
+        if (showChrome) {
+            this.drawChrome(ctx, width, height);
+        }
+    }
+
+    /** Adjusted background, cached so dragging text does not re-run the pixel work. */
+    getFilteredBackground(width, height) {
+        const { brightness, contrast, saturation, warmth, blur } = this.filters;
+        const key = [width, height, brightness, contrast, saturation, warmth, blur].join('|');
+        if (this.backgroundCache && this.backgroundCacheKey === key) {
+            return this.backgroundCache;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: !supportsCanvasFilter });
+        const needsTone = brightness !== 100 || contrast !== 100 || saturation !== 100;
+
+        if (supportsCanvasFilter) {
+            const blurPx = blur * (Math.min(width, height) / 1024);
+            ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)${blurPx > 0 ? ` blur(${blurPx}px)` : ''}`;
+            ctx.drawImage(this.image, 0, 0, width, height);
+            ctx.filter = 'none';
+        } else {
+            ctx.drawImage(this.image, 0, 0, width, height);
+            if (needsTone) {
+                applyToneFallback(ctx, width, height, brightness, contrast, saturation);
+            }
+        }
+
+        if (warmth !== 0) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'soft-light';
+            ctx.globalAlpha = Math.min(1, Math.abs(warmth) / 100) * 0.7;
+            ctx.fillStyle = warmth > 0 ? '#ff8a2a' : '#2a7dff';
+            ctx.fillRect(0, 0, width, height);
+            ctx.restore();
+        }
+
+        this.backgroundCache = canvas;
+        this.backgroundCacheKey = key;
+        return canvas;
+    }
+
+    drawChrome(ctx, width, height) {
+        const scale = this.getScreenScale();
+
+        if (this.guides.x || this.guides.y) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 64, 129, 0.9)';
+            ctx.lineWidth = 1.5 * scale;
+            ctx.setLineDash([6 * scale, 5 * scale]);
+            ctx.beginPath();
+            if (this.guides.x) {
+                ctx.moveTo(width / 2, 0);
+                ctx.lineTo(width / 2, height);
+            }
+            if (this.guides.y) {
+                ctx.moveTo(0, height / 2);
+                ctx.lineTo(width, height / 2);
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        const layer = this.selectedLayer;
+        if (!layer) return;
+
+        const layout = layoutTextLayer(ctx, layer, width, height);
+        const box = getLayerBox(layout);
+        ctx.save();
+        ctx.translate(layout.cx, layout.cy);
+        ctx.rotate(layout.rotation);
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.lineWidth = 3 * scale;
+        ctx.strokeRect(box.left, box.top, box.width, box.height);
+        ctx.strokeStyle = '#6d5dfc';
+        ctx.lineWidth = 1.5 * scale;
+        ctx.setLineDash([7 * scale, 5 * scale]);
+        ctx.strokeRect(box.left, box.top, box.width, box.height);
+        ctx.setLineDash([]);
+
+        const rotateY = box.top - ROTATE_HANDLE_OFFSET * scale;
+        ctx.beginPath();
+        ctx.moveTo(0, box.top);
+        ctx.lineTo(0, rotateY);
+        ctx.stroke();
+
+        for (const [hx, hy] of [[box.right, box.bottom], [0, rotateY]]) {
+            ctx.beginPath();
+            ctx.arc(hx, hy, HANDLE_RADIUS * scale, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.lineWidth = 2 * scale;
+            ctx.strokeStyle = '#6d5dfc';
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    getScreenScale() {
+        const rect = this.canvas.getBoundingClientRect();
+        return rect.width ? this.canvas.width / rect.width : 1;
+    }
+
+    toCanvasPoint(event) {
+        const rect = this.canvas.getBoundingClientRect();
+        return {
+            x: ((event.clientX - rect.left) / rect.width) * this.canvas.width,
+            y: ((event.clientY - rect.top) / rect.height) * this.canvas.height
+        };
+    }
+
+    hitTest(point) {
+        const scale = this.getScreenScale();
+        for (let i = this.layers.length - 1; i >= 0; i -= 1) {
+            const layer = this.layers[i];
+            const layout = layoutTextLayer(this.ctx, layer, this.canvas.width, this.canvas.height);
+            const local = toLocal(point, layout);
+            const box = getLayerBox(layout);
+            const tolerance = 6 * scale;
+            if (
+                local.x >= box.left - tolerance && local.x <= box.right + tolerance &&
+                local.y >= box.top - tolerance && local.y <= box.bottom + tolerance
+            ) {
+                return layer;
+            }
+        }
+        return null;
+    }
+
+    hitHandle(point) {
+        const layer = this.selectedLayer;
+        if (!layer) return null;
+        const scale = this.getScreenScale();
+        const layout = layoutTextLayer(this.ctx, layer, this.canvas.width, this.canvas.height);
+        const box = getLayerBox(layout);
+        const local = toLocal(point, layout);
+        const reach = (HANDLE_RADIUS + 6) * scale;
+        if (Math.hypot(local.x - box.right, local.y - box.bottom) <= reach) {
+            return { type: 'resize', layer, layout };
+        }
+        if (Math.hypot(local.x, local.y - (box.top - ROTATE_HANDLE_OFFSET * scale)) <= reach) {
+            return { type: 'rotate', layer, layout };
+        }
+        return null;
+    }
+
+    bindPointerEvents() {
+        const canvas = this.canvas;
+
+        canvas.addEventListener('pointerdown', (event) => {
+            if (!this.image || event.button > 0) return;
+            const point = this.toCanvasPoint(event);
+            const handle = this.hitHandle(point);
+
+            if (handle?.type === 'resize') {
+                this.interaction = {
+                    type: 'resize',
+                    id: handle.layer.id,
+                    startDistance: Math.max(1, Math.hypot(point.x - handle.layout.cx, point.y - handle.layout.cy)),
+                    startSize: handle.layer.size,
+                    startMaxWidth: handle.layer.maxWidth,
+                    moved: false
+                };
+            } else if (handle?.type === 'rotate') {
+                this.interaction = {
+                    type: 'rotate',
+                    id: handle.layer.id,
+                    cx: handle.layout.cx,
+                    cy: handle.layout.cy,
+                    moved: false
+                };
             } else {
-                currentLine = testLine;
-            }
-        }
-        if (currentLine) {
-            lines.push(currentLine);
-        }
-        return lines;
-    }
-
-    /**
-     * Bind canvas mouse and touch events for interactive dragging
-     */
-    initEvents() {
-        const getCanvasCoords = (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            // Client coordinates mapped to actual canvas canvas dimensions
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            
-            return {
-                x: ((clientX - rect.left) / rect.width) * this.canvas.width,
-                y: ((clientY - rect.top) / rect.height) * this.canvas.height
-            };
-        };
-
-        const handleDown = (e) => {
-            if (!this.backgroundImage) return;
-            const coords = getCanvasCoords(e);
-            const clickYPct = coords.y / this.canvas.height;
-
-            // Find closest active text overlay
-            let closestKey = null;
-            let minDiff = 0.12; // Drag threshold (within 12% height of the text position)
-
-            for (const [key, overlay] of Object.entries(this.state.overlays)) {
-                if (!overlay.active || !overlay.text.trim()) continue;
-                const diff = Math.abs(overlay.yPct - clickYPct);
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    closestKey = key;
-                }
+                const hit = this.hitTest(point);
+                this.select(hit?.id || null);
+                if (!hit) return;
+                this.interaction = {
+                    type: 'move',
+                    id: hit.id,
+                    offsetX: point.x - hit.x * canvas.width,
+                    offsetY: point.y - hit.y * canvas.height,
+                    moved: false
+                };
             }
 
-            if (closestKey) {
-                this.draggedKey = closestKey;
-                this.isDragging = true;
-                this.canvas.style.cursor = 'ns-resize';
-                e.preventDefault(); // Prevent text selection/scrolling
-            }
-        };
+            canvas.setPointerCapture(event.pointerId);
+            canvas.focus({ preventScroll: true });
+            event.preventDefault();
+        });
 
-        const handleMove = (e) => {
-            if (!this.isDragging || !this.draggedKey) {
-                // Change cursor to pointer if hovering near a draggable element
-                if (this.backgroundImage) {
-                    const coords = getCanvasCoords(e);
-                    const hoverYPct = coords.y / this.canvas.height;
-                    let isHovering = false;
-                    for (const overlay of Object.values(this.state.overlays)) {
-                        if (overlay.active && overlay.text.trim() && Math.abs(overlay.yPct - hoverYPct) < 0.08) {
-                            isHovering = true;
-                            break;
-                        }
-                    }
-                    this.canvas.style.cursor = isHovering ? 'ns-resize' : 'default';
-                }
+        canvas.addEventListener('pointermove', (event) => {
+            if (!this.image) return;
+            const point = this.toCanvasPoint(event);
+
+            if (!this.interaction) {
+                const handle = this.hitHandle(point);
+                canvas.style.cursor = handle?.type === 'resize'
+                    ? 'nwse-resize'
+                    : handle?.type === 'rotate' ? 'grab' : this.hitTest(point) ? 'move' : 'default';
                 return;
             }
 
-            const coords = getCanvasCoords(e);
-            let targetYPct = coords.y / this.canvas.height;
-            
-            // Clamp between 5% and 95% to prevent dragging off canvas
-            targetYPct = Math.max(0.05, Math.min(0.95, targetYPct));
-            
-            this.state.overlays[this.draggedKey].yPct = targetYPct;
-            this.draw();
-            e.preventDefault();
-        };
+            const layer = this.layers.find((candidate) => candidate.id === this.interaction.id);
+            if (!layer) return;
+            this.interaction.moved = true;
 
-        const handleUp = () => {
-            const wasDragging = this.isDragging;
-            this.isDragging = false;
-            this.draggedKey = null;
-            this.canvas.style.cursor = 'default';
-            if (wasDragging && typeof this.onDragEnd === 'function') {
-                this.onDragEnd();
+            if (this.interaction.type === 'move') {
+                let x = (point.x - this.interaction.offsetX) / canvas.width;
+                let y = (point.y - this.interaction.offsetY) / canvas.height;
+                this.guides.x = Math.abs(x - 0.5) < SNAP_TOLERANCE;
+                this.guides.y = Math.abs(y - 0.5) < SNAP_TOLERANCE;
+                if (this.guides.x) x = 0.5;
+                if (this.guides.y) y = 0.5;
+                layer.x = Math.min(1.1, Math.max(-0.1, x));
+                layer.y = Math.min(1.1, Math.max(-0.1, y));
+            } else if (this.interaction.type === 'resize') {
+                const layout = layoutTextLayer(this.ctx, layer, canvas.width, canvas.height);
+                const ratio = Math.hypot(point.x - layout.cx, point.y - layout.cy) / this.interaction.startDistance;
+                layer.size = Math.min(0.5, Math.max(0.012, this.interaction.startSize * ratio));
+                layer.maxWidth = Math.min(1.2, Math.max(0.1, this.interaction.startMaxWidth * ratio));
+            } else if (this.interaction.type === 'rotate') {
+                let degrees = (Math.atan2(point.y - this.interaction.cy, point.x - this.interaction.cx) * 180) / Math.PI + 90;
+                if (degrees > 180) degrees -= 360;
+                const snapped = Math.round(degrees / 45) * 45;
+                layer.rotation = Math.abs(degrees - snapped) < 4 ? snapped : Math.round(degrees);
             }
+
+            this.requestRender();
+            this.dispatchEvent(new Event('change'));
+        });
+
+        const endInteraction = () => {
+            if (!this.interaction) return;
+            const { moved } = this.interaction;
+            this.interaction = null;
+            this.guides = { x: false, y: false };
+            this.requestRender();
+            if (moved) this.commit();
         };
+        canvas.addEventListener('pointerup', endInteraction);
+        canvas.addEventListener('pointercancel', endInteraction);
 
-        this.canvas.addEventListener('mousedown', handleDown);
-        this.canvas.addEventListener('mousemove', handleMove);
-        window.addEventListener('mouseup', handleUp);
+        canvas.addEventListener('dblclick', (event) => {
+            const hit = this.hitTest(this.toCanvasPoint(event));
+            if (hit) {
+                this.select(hit.id);
+                this.dispatchEvent(new CustomEvent('edittext', { detail: { id: hit.id } }));
+            }
+        });
 
-        this.canvas.addEventListener('touchstart', handleDown, { passive: false });
-        this.canvas.addEventListener('touchmove', handleMove, { passive: false });
-        window.addEventListener('touchend', handleUp);
+        canvas.addEventListener('keydown', (event) => {
+            const layer = this.selectedLayer;
+            if (!layer) return;
+            const step = event.shiftKey ? 0.02 : 0.004;
+            const moves = {
+                ArrowLeft: [-step, 0],
+                ArrowRight: [step, 0],
+                ArrowUp: [0, -step],
+                ArrowDown: [0, step]
+            };
+            if (moves[event.key]) {
+                const [dx, dy] = moves[event.key];
+                this.updateLayer(layer.id, { x: layer.x + dx, y: layer.y + dy });
+                event.preventDefault();
+            } else if (event.key === 'Delete' || event.key === 'Backspace') {
+                this.removeLayer(layer.id);
+                event.preventDefault();
+            } else if (event.key === 'Escape') {
+                this.select(null);
+            }
+        });
+    }
+}
+
+// ----- drawing helpers (pure functions of a context and a layer) -----
+
+export function layoutTextLayer(ctx, layer, width, height) {
+    const unit = Math.min(width, height);
+    const px = layer.size * unit;
+    const spacingPx = layer.letterSpacing * px;
+    const font = buildCanvasFont(layer, px);
+
+    ctx.save();
+    ctx.font = font;
+    if (supportsLetterSpacing) ctx.letterSpacing = `${spacingPx}px`;
+    const measure = (text) => measureLine(ctx, text, spacingPx);
+    const text = layer.uppercase ? layer.text.toUpperCase() : layer.text;
+    const lines = wrapText(text, layer.maxWidth * width, measure);
+    const lineWidths = lines.map(measure);
+    ctx.restore();
+
+    const lineHeightPx = px * layer.lineHeight;
+    const blockWidth = Math.max(px * 0.6, ...lineWidths);
+    const blockHeight = Math.max(1, lines.length) * lineHeightPx;
+    const padding = layer.background.enabled ? layer.background.padding * px : px * 0.12;
+
+    return {
+        px,
+        font,
+        spacingPx,
+        lines,
+        lineWidths,
+        lineHeightPx,
+        blockWidth,
+        blockHeight,
+        padX: padding,
+        padY: padding * 0.7,
+        cx: layer.x * width,
+        cy: layer.y * height,
+        rotation: (layer.rotation * Math.PI) / 180
+    };
+}
+
+function getLayerBox(layout) {
+    const halfWidth = layout.blockWidth / 2 + layout.padX;
+    const halfHeight = layout.blockHeight / 2 + layout.padY;
+    return {
+        left: -halfWidth,
+        right: halfWidth,
+        top: -halfHeight,
+        bottom: halfHeight,
+        width: halfWidth * 2,
+        height: halfHeight * 2
+    };
+}
+
+function toLocal(point, layout) {
+    const dx = point.x - layout.cx;
+    const dy = point.y - layout.cy;
+    const cos = Math.cos(layout.rotation);
+    const sin = Math.sin(layout.rotation);
+    return {
+        x: dx * cos + dy * sin,
+        y: -dx * sin + dy * cos
+    };
+}
+
+function measureLine(ctx, text, spacingPx) {
+    if (!text) return 0;
+    const width = ctx.measureText(text).width;
+    // Native letterSpacing also pads after the final glyph; manual spacing only goes between glyphs.
+    return supportsLetterSpacing ? width - spacingPx : width + (Array.from(text).length - 1) * spacingPx;
+}
+
+/** Greedy word wrap that also breaks words longer than the line (long names, URLs). */
+export function wrapText(text, maxWidth, measure) {
+    const lines = [];
+    for (const paragraph of text.split('\n')) {
+        const words = paragraph.split(/\s+/).filter(Boolean);
+        if (!words.length) {
+            lines.push('');
+            continue;
+        }
+
+        let current = '';
+        for (const word of words) {
+            const candidate = current ? `${current} ${word}` : word;
+            if (measure(candidate) <= maxWidth) {
+                current = candidate;
+                continue;
+            }
+            if (current) lines.push(current);
+
+            if (measure(word) <= maxWidth) {
+                current = word;
+                continue;
+            }
+
+            let chunk = '';
+            for (const char of Array.from(word)) {
+                if (chunk && measure(chunk + char) > maxWidth) {
+                    lines.push(chunk);
+                    chunk = char;
+                } else {
+                    chunk += char;
+                }
+            }
+            current = chunk;
+        }
+        lines.push(current);
+    }
+    return lines;
+}
+
+function drawTextLayer(ctx, layer, width, height) {
+    if (!layer.text.trim()) return;
+    const layout = layoutTextLayer(ctx, layer, width, height);
+    const { px, lines, lineWidths, lineHeightPx, blockWidth, blockHeight, spacingPx } = layout;
+
+    ctx.save();
+    ctx.translate(layout.cx, layout.cy);
+    ctx.rotate(layout.rotation);
+    ctx.globalAlpha = layer.opacity;
+
+    if (layer.background.enabled && layer.background.opacity > 0) {
+        const box = getLayerBox(layout);
+        ctx.save();
+        ctx.globalAlpha = layer.opacity * layer.background.opacity;
+        ctx.fillStyle = layer.background.color;
+        ctx.beginPath();
+        const radius = Math.min(layer.background.radius * px, box.height / 2);
+        if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(box.left, box.top, box.width, box.height, radius);
+        } else {
+            ctx.rect(box.left, box.top, box.width, box.height);
+        }
+        ctx.fill();
+        ctx.restore();
     }
 
-    /**
-     * Export the final composition as a high-quality dataURL
-     * @returns {string} PNG base64 DataURL
-     */
-    exportPNG() {
-        return this.canvas.toDataURL('image/png', 1.0);
+    ctx.font = layout.font;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    if (supportsLetterSpacing) ctx.letterSpacing = `${spacingPx}px`;
+    ctx.fillStyle = layer.color;
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.strokeStyle = layer.outline.color;
+    // Strokes straddle the glyph edge and the fill covers the inner half, so double the width.
+    ctx.lineWidth = layer.outline.width * px * 2;
+
+    const positions = lines.map((line, index) => {
+        const lineWidth = lineWidths[index];
+        const x = layer.align === 'left'
+            ? -blockWidth / 2
+            : layer.align === 'right' ? blockWidth / 2 - lineWidth : -lineWidth / 2;
+        return { line, x, y: -blockHeight / 2 + lineHeightPx * (index + 0.5) };
+    });
+
+    const paint = () => {
+        for (const { line, x, y } of positions) {
+            if (layer.outline.enabled) drawLine(ctx, line, x, y, spacingPx, 'stroke');
+            drawLine(ctx, line, x, y, spacingPx, 'fill');
+        }
+    };
+
+    if (layer.shadow.enabled && layer.shadow.strength > 0) {
+        ctx.save();
+        ctx.shadowColor = hexToRgba(layer.shadow.color, 0.35 + layer.shadow.strength * 0.5);
+        ctx.shadowBlur = px * (0.08 + layer.shadow.strength * 0.45);
+        ctx.shadowOffsetY = px * 0.04 * layer.shadow.strength;
+        paint();
+        ctx.restore();
+    }
+    paint();
+    ctx.restore();
+}
+
+function drawLine(ctx, text, x, y, spacingPx, mode) {
+    if (!text) return;
+    if (supportsLetterSpacing || !spacingPx) {
+        if (mode === 'stroke') ctx.strokeText(text, x, y);
+        else ctx.fillText(text, x, y);
+        return;
     }
 
-    /**
-     * Reset editor parameters to default
-     */
-    reset() {
-        // Reset coordinates
-        this.state.overlays.header.yPct = 0.20;
-        this.state.overlays.quote.yPct = 0.50;
-        this.state.overlays.author.yPct = 0.78;
-        
-        // Reset filters
-        this.state.filters = {
-            brightness: 85,
-            contrast: 105,
-            saturation: 90,
-            blur: 1,
-            vignette: 0.4
-        };
-        
-        this.draw();
+    let cursor = x;
+    for (const char of Array.from(text)) {
+        if (mode === 'stroke') ctx.strokeText(char, cursor, y);
+        else ctx.fillText(char, cursor, y);
+        cursor += ctx.measureText(char).width + spacingPx;
     }
+}
+
+function drawVignette(ctx, width, height, strength) {
+    const gradient = ctx.createRadialGradient(
+        width / 2, height / 2, Math.min(width, height) * 0.3,
+        width / 2, height / 2, Math.hypot(width, height) / 2
+    );
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gradient.addColorStop(1, `rgba(0, 0, 0, ${Math.min(1, strength)})`);
+    ctx.save();
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+}
+
+/** Per-pixel brightness/contrast/saturation for browsers without canvas filters (Safari). */
+function applyToneFallback(ctx, width, height, brightness, contrast, saturation) {
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    const b = brightness / 100;
+    const c = contrast / 100;
+    const s = saturation / 100;
+
+    for (let i = 0; i < data.length; i += 4) {
+        let r = data[i] * b;
+        let g = data[i + 1] * b;
+        let bl = data[i + 2] * b;
+        r = (r - 128) * c + 128;
+        g = (g - 128) * c + 128;
+        bl = (bl - 128) * c + 128;
+        const gray = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+        data[i] = gray + (r - gray) * s;
+        data[i + 1] = gray + (g - gray) * s;
+        data[i + 2] = gray + (bl - gray) * s;
+    }
+    ctx.putImageData(imageData, 0, 0);
+}
+
+function hexToRgba(hex, alpha) {
+    const value = parseInt(hex.slice(1), 16);
+    return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
 }

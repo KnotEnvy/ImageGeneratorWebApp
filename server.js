@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { InferenceClient } from '@huggingface/inference';
 import { createClient as createRedisClient } from 'redis';
@@ -416,6 +417,10 @@ async function handleApi(req, res, url, requestId) {
             providers: getProviderStatus(),
             models: getPublicModelCatalog(),
             aspectRatios: SUPPORTED_ASPECT_RATIOS,
+            offer: {
+                freeMonthlyCredits,
+                freeCreditsRefresh
+            },
             user: user ? publicUser(user) : null
         });
         return;
@@ -647,6 +652,19 @@ async function handleApi(req, res, url, requestId) {
     }
 
     const galleryDeleteMatch = url.pathname.match(/^\/api\/gallery\/([^/]+)$/);
+    if (req.method === 'PUT' && galleryDeleteMatch) {
+        const user = await requireAuth(req);
+        assertEmailVerifiedIfRequired(user);
+        const body = await readJsonBody(req, 40 * 1024 * 1024);
+        const item = await updateGalleryItem(user.id, galleryDeleteMatch[1], body);
+        sendJson(res, 200, {
+            ok: true,
+            requestId,
+            item
+        });
+        return;
+    }
+
     if (req.method === 'DELETE' && galleryDeleteMatch) {
         const user = await requireAuth(req);
         await deleteGalleryItem(user.id, galleryDeleteMatch[1]);
@@ -2098,9 +2116,10 @@ function createMockCheckoutSession(user, { kind, packId = null }) {
         packId
     });
 
+    // Relative so the local round trip stays on whatever host the page was opened with.
     return {
         id,
-        url: buildAppUrl(`/?mock_checkout_session=${encodeURIComponent(id)}`)
+        url: `/?mock_checkout_session=${encodeURIComponent(id)}`
     };
 }
 
@@ -2217,7 +2236,7 @@ async function createStripePortalSession(user) {
 
     if (mockStripeResponses) {
         return {
-            url: buildAppUrl(`/?mock_billing_portal=${encodeURIComponent(customerId)}`)
+            url: `/?mock_billing_portal=${encodeURIComponent(customerId)}`
         };
     }
 
@@ -3401,6 +3420,59 @@ async function createGalleryItem(userId, body) {
     return formatGalleryItem(item);
 }
 
+async function updateGalleryItem(userId, itemId, body) {
+    await assertContentPolicyAllowed(userId, collectGalleryPolicyText(body), {
+        surface: 'gallery_save'
+    });
+
+    const db = await getDb();
+    const existing = db.userGalleryItems.find((item) => item.id === itemId && item.userId === userId);
+    if (!existing) {
+        throw new PublicApiError('Gallery item not found.', 404, 'gallery_item_not_found');
+    }
+
+    const finalAsset = await storeDataUrlAsset(userId, body?.finalImage, {
+        kind: 'gallery-final',
+        source: 'gallery-update'
+    });
+    const previousFinalAssetId = existing.finalAssetId;
+
+    const item = await updateDb((database) => {
+        const target = database.userGalleryItems.find((candidate) => candidate.id === itemId && candidate.userId === userId);
+        if (!target) {
+            throw new PublicApiError('Gallery item not found.', 404, 'gallery_item_not_found');
+        }
+        target.finalAssetId = finalAsset.id;
+        target.design = sanitizeJsonObject(body?.design);
+        target.updatedAt = new Date().toISOString();
+        return target;
+    });
+
+    await deleteOwnedAsset(userId, previousFinalAssetId);
+    return formatGalleryItem(item);
+}
+
+async function deleteOwnedAsset(userId, assetId) {
+    const db = await getDb();
+    const asset = db.imageAssets.find((candidate) => candidate.id === assetId && candidate.userId === userId);
+    if (!asset) {
+        return;
+    }
+
+    try {
+        await deleteAssetObject(asset.storageKey || asset.relativePath);
+    } catch (error) {
+        logError('asset_delete_failed', {
+            assetId,
+            error: serializeErrorForLog(error)
+        });
+    }
+
+    await updateDb((database) => {
+        database.imageAssets = database.imageAssets.filter((candidate) => candidate.id !== assetId);
+    });
+}
+
 async function resolveImageReference(userId, image, metadata) {
     if (typeof image !== 'string' || !image.trim()) {
         throw new PublicApiError('Original image is required.', 400, 'invalid_image');
@@ -3900,16 +3972,19 @@ function parseRequiredProviders(value) {
 async function enhancePromptWithGemini(body) {
     requireProvider('gemini');
     const prompt = normalizePrompt(body?.prompt);
-    const stylePreset = typeof body?.stylePreset === 'string' ? body.stylePreset.slice(0, 80) : 'None';
+    const style = getStyleById(body?.styleId);
+    const styleGuidance = style
+        ? `The art style "${style.name}" (${style.prompt}) is applied separately, so keep the scene consistent with it but do not restate the medium or technique.`
+        : 'No art style is applied separately, so you may suggest a fitting medium.';
 
-    const systemInstruction = `You are a professional AI image generation prompt engineer.
-Take a simple raw prompt and expand it into a detailed, descriptive, visually strong prompt for image generation.
-Apply the visual style preset: "${stylePreset}".
-Describe subject, layout, composition, mood, color palette, lighting, medium, texture, and rendering style.
-Output only the final enhanced prompt. Do not include intro text, quotes, code fences, or outro. Keep it between 60 and 120 words.`;
+    const systemInstruction = `You are an art director helping someone describe an image for an AI image generator.
+Rewrite their idea as one vivid, specific description of the scene: subject, setting, composition, lighting, mood, and color.
+${styleGuidance}
+Keep everything the person asked for, including names and details. Do not add text, lettering, or logos to the scene unless they asked for it.
+Output only the description, with no intro, quotes, or lists. Keep it between 40 and 90 words.`;
 
     const data = await postJsonToProvider(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent`,
+        `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash')}:generateContent`,
         {
             headers: {
                 'x-goog-api-key': process.env.GEMINI_API_KEY,
@@ -4060,9 +4135,9 @@ async function generateImage(request, options = {}) {
 
 async function generateMockImage({ provider, model, aspectRatio, quality, outputFormat, signal }) {
     await delayWithAbort(mockProviderDelayMs, signal);
-    const mockPreviewPng = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAQVSURBVHhe5db3a1V3GMfx558oYimiSGkpRRFRRFpKEWkRKaJIjHWvpGrjSBP31lSNo1q1jkatdTTe7GX2MMOYGDPcMzZVY+LW1Kq/fPp9fnjgEK7jfM+59+TyfcP9A17P/Zx7Lr0+8wFe1XbDq5rueHn6Q/X5CP9V98CLUz3xoqoX/q3sjY6Kj9FR/gmen/wUz8s+w7PSz/G0pA+eFvfFk6J+eFzYH48LBuBR/kD1GYSHeYPxIPcLPDjxJe7nfIX27K/RnjUEbZlD0ZbxDe6lf4vWtGFoTR2Ouynf4U7yCNxJGonbvlH4xzcaLcfD0JIYjr//Gotbx8ah+egENB+ZhJuHJ+Pmn1Nx49B0XP8jAtcPRuLagZm4un82riZE4crvc9RnHi7vi8alvTG4tCcWF3cvxIXfFuPCrqU4v3OZ+qzAuR2r0PTrGjRtXwsyGd+4LU4dwGB8wy/rQSbjG7Zu5AOYi6/fEg8yGV+/eTPIZPzZTVvVAQzG18VvA5mMr9u4HWQy/syGHeoABuNr1+8CmYyv/Xm3OoDB+Jq4PSCT8TVx+0DBxNspGPjT6xLUAQKMd6NA4avXHgAFCu8vO7P3l9v46jUHQcHAO3nmO+cm/tTqQ+oAAcS7+YNnzS181arDoFDAy+ytuYGvWnmUDxAaeOvsJaf4yhXHQKGG52/emhN85fJEUKjhZfbWdPEVy3zqAA7w1vd8MPEye0kXX740GeQGngs2nmdvTQdfviQFpIvnv7eSF3iZvaSDP7k4TR1AE2/9b+8Vnmcv6eDLFmWAQhkvs5fs4ssWZqkDaOD5B0/yGs/fvGQXX7ogB6SD52de8hrPs5fs4ksX5IJ08Dx7yWs8z16yiy+OKYA5ATPeY2X2Ut28MU/FYHs4uWZl0IZXxRdog6ggefZS17jefaSXXzh/DKQDp5nL3mN52desosvnFcO0sHz7CWv8Tx7yS6+YG4FSAfPs5e8xvPsJbv4/DlV6gAaeJm91BXwnF18XlQ1SBfP37zkFZ6feUkHn/djDUgXz7O35gWen3lJB587uxaki5fZS6GIPzGrTh3AAZ5nb80LPKeLz5lZD3KCl9lbCyV8zg+N6gAO8TJ7KdB4ftVJTvHZkU0gN/Aye2td/ZtnfHbkeZBbePnmrXV1fFbERXUAF/Ey+851VXzmjMsgt/Eye3/ZwfvLbXzm9CugQOCts39XjH9XTt7zb8NnTLumDhBAfOfZ20337+374tOn3gAFC/+m2XP+XnXBwKdPaeYDeId/03s+WPi0ybdAJuPTJrWATManTrytDmAwPmXCXZDJ+JTxrSCT8cnj2tQBDMYnfX8fZDI+aexDPoC5eF/4I5DJeF/4E5DJ+ONjnqkDGIxPDOvA/1xdZ0QUsIMdAAAAAElFTkSuQmCC';
+    const [width, height] = mapOpenAIImageSize(aspectRatio).split('x').map((value) => Math.round(Number(value) / 2));
     return {
-        imageDataUrl: `data:image/png;base64,${mockPreviewPng}`,
+        imageDataUrl: `data:image/png;base64,${createMockLandscapePng(width, height).toString('base64')}`,
         provider,
         model,
         meta: {
@@ -4072,6 +4147,83 @@ async function generateMockImage({ provider, model, aspectRatio, quality, output
             outputFormat
         }
     };
+}
+
+// Test-mode stand-in for provider output: a small painted landscape at the requested shape,
+// so the editor and exports can be exercised realistically without spending API credits.
+function createMockLandscapePng(width, height) {
+    const rowBytes = width * 3 + 1;
+    const pixels = Buffer.alloc(rowBytes * height);
+    const sunX = width * 0.68;
+    const sunY = height * 0.34;
+    const sunRadius = Math.min(width, height) * 0.11;
+
+    for (let y = 0; y < height; y += 1) {
+        pixels[y * rowBytes] = 0;
+        for (let x = 0; x < width; x += 1) {
+            const t = y / height;
+            let r = 250 - 70 * t;
+            let g = 196 - 60 * t;
+            let b = 160 + 40 * t;
+
+            if (Math.hypot(x - sunX, y - sunY) < sunRadius) {
+                r = 255;
+                g = 236;
+                b = 190;
+            }
+
+            const farHill = height * (0.62 + 0.05 * Math.sin((x / width) * Math.PI * 2.2));
+            const nearHill = height * (0.74 + 0.06 * Math.sin((x / width) * Math.PI * 1.3 + 1.7));
+            if (y > farHill) {
+                r = 116;
+                g = 128;
+                b = 150;
+            }
+            if (y > nearHill) {
+                const shade = (y - nearHill) / height;
+                r = 62 - 30 * shade;
+                g = 96 - 30 * shade;
+                b = 84 - 20 * shade;
+            }
+
+            const offset = y * rowBytes + 1 + x * 3;
+            pixels[offset] = r;
+            pixels[offset + 1] = g;
+            pixels[offset + 2] = b;
+        }
+    }
+
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(width, 0);
+    header.writeUInt32BE(height, 4);
+    header[8] = 8;
+    header[9] = 2;
+    return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        pngChunk('IHDR', header),
+        pngChunk('IDAT', deflateSync(pixels)),
+        pngChunk('IEND', Buffer.alloc(0))
+    ]);
+}
+
+function pngChunk(type, data) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const typeAndData = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(typeAndData));
+    return Buffer.concat([length, typeAndData, crc]);
+}
+
+function crc32(buffer) {
+    let crc = 0xffffffff;
+    for (const byte of buffer) {
+        crc ^= byte;
+        for (let bit = 0; bit < 8; bit += 1) {
+            crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+        }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
 }
 
 async function generateOpenAIImage({ prompt, model, aspectRatio, quality, outputFormat, signal }) {
@@ -4609,7 +4761,13 @@ async function serveStaticFile(res, url) {
     }
 
     const ext = path.extname(pathname);
-    if (!publicExtensions.has(ext) || pathname.includes('..')) {
+    if (!publicExtensions.has(ext) || pathname.includes('..') || pathname.split('/').some((segment) => segment.startsWith('.'))) {
+        throw new PublicApiError('File not found.', 404, 'not_found');
+    }
+
+    // Dev mode serves from the repository root, so only expose the browser app itself; never
+    // server code, package metadata, or a DATA_DIR that lives inside the repo.
+    if (isDev && !isDevBrowserAsset(pathname)) {
         throw new PublicApiError('File not found.', 404, 'not_found');
     }
 
@@ -4632,6 +4790,15 @@ async function serveStaticFile(res, url) {
     }
 
     await sendFile(res, requestedPath, contentTypes[ext] || 'application/octet-stream');
+}
+
+function isDevBrowserAsset(pathname) {
+    if (['/index.html', '/app.js', '/styles.css'].includes(pathname) || pathname.startsWith('/js/')) {
+        return true;
+    }
+    const publicRoot = path.resolve(__dirname, 'public');
+    const publicPath = path.resolve(publicRoot, `.${pathname}`);
+    return publicPath.startsWith(`${publicRoot}${path.sep}`) && existsSync(publicPath);
 }
 
 async function sendFile(res, filePath, contentType, cacheControl = isDev ? 'no-store' : 'public, max-age=3600') {

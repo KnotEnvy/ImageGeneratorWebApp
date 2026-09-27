@@ -34,7 +34,8 @@ export default defineConfig({
             API_RATE_LIMIT_PER_MINUTE: '1000',
             AUTH_RATE_LIMIT_PER_15_MINUTES: '100',
             GENERATION_RATE_LIMIT_PER_HOUR: '100',
-            FREE_MONTHLY_CREDITS: '25'
+            FREE_MONTHLY_CREDITS: '3',
+            MOCK_STRIPE_RESPONSES: '1'
         }
     },
     projects: [

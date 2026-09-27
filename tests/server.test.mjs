@@ -944,6 +944,25 @@ test('content policy blocks unsafe prompts and abuse reports are visible to admi
     }
 });
 
+test('dev static server exposes only the browser app, never server files or data', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-static-test-'));
+    const server = await startServer({ dataDir });
+
+    try {
+        for (const pathname of ['/', '/app.js', '/styles.css', '/js/styles.js', '/favicon.svg']) {
+            const response = await fetch(`${server.baseUrl}${pathname}`);
+            assert.equal(response.status, 200, pathname);
+        }
+        for (const pathname of ['/server.js', '/package.json', '/package-lock.json', '/tests/server.test.mjs', '/.env.example', '/.data/db.json']) {
+            const response = await fetch(`${server.baseUrl}${pathname}`);
+            assert.equal(response.status, 404, pathname);
+        }
+    } finally {
+        await server.stop();
+        await rm(dataDir, { recursive: true, force: true });
+    }
+});
+
 test('readiness reports missing required providers without running provider work', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-readiness-test-'));
     const server = await startServer({

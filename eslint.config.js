@@ -72,5 +72,14 @@ export default [
         varsIgnorePattern: '^_'
       }]
     }
+  },
+  {
+    // page.evaluate() callbacks in browser tests and the preview script run inside a page.
+    files: ['tests/e2e/**/*.mjs', 'scripts/generate-style-previews.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.browser
+      }
+    }
   }
 ];
