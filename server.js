@@ -167,6 +167,11 @@ const PLAN_CATALOG = {
     }
 };
 const SUPPORTED_ASPECT_RATIOS = ['1:1', '4:5', '2:3', '3:2', '16:9', '9:16'];
+// Stripe subscription statuses: which ones unlock the paid plan, which mean the subscription
+// still exists (so a second checkout would double-bill), and which are terminal.
+const PAID_PLAN_STRIPE_STATUSES = new Set(['active', 'trialing', 'past_due']);
+const LIVE_STRIPE_STATUSES = new Set(['active', 'trialing', 'past_due', 'paused', 'unpaid']);
+const ENDED_STRIPE_STATUSES = new Set(['canceled', 'incomplete_expired']);
 
 const contentTypes = {
     '.html': 'text/html; charset=utf-8',
@@ -355,6 +360,19 @@ async function handleApi(req, res, url, requestId) {
         return;
     }
 
+    // Stripe retries webhooks that fail, and throttling them only delays or reorders billing
+    // events; signatures already authenticate them, so they skip the per-IP API limit.
+    if (req.method === 'POST' && url.pathname === '/api/billing/webhook') {
+        const result = await handleStripeWebhook(req);
+        sendJson(res, 200, {
+            ok: true,
+            requestId,
+            received: true,
+            result
+        });
+        return;
+    }
+
     await enforceRateLimit(req, 'api', genericApiRateLimit, 60 * 1000);
 
     if (req.method === 'GET' && url.pathname === '/api/admin/summary') {
@@ -432,17 +450,6 @@ async function handleApi(req, res, url, requestId) {
             ok: true,
             requestId,
             user: user ? publicUser(user) : null
-        });
-        return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/billing/webhook') {
-        const result = await handleStripeWebhook(req);
-        sendJson(res, 200, {
-            ok: true,
-            requestId,
-            received: true,
-            result
         });
         return;
     }
@@ -1596,22 +1603,31 @@ function refreshCreditAllowance(db, user, timestamp = new Date().toISOString()) 
 
     const credits = user.credits;
     const now = Date.parse(timestamp);
-    const periodEnded = Boolean(credits.allowancePeriodEnd) && now >= Date.parse(credits.allowancePeriodEnd);
+    const hasEnded = (end) => Boolean(end) && now >= Date.parse(end);
     const plan = getUserSubscription(db, user).plan;
 
-    if (credits.allowanceSource === 'subscription' && plan === 'pro' && !periodEnded) {
+    if (credits.allowanceSource === 'subscription' && plan === 'pro' && !hasEnded(credits.allowancePeriodEnd)) {
         return false;
     }
 
-    if (credits.allowanceSource === 'free' && !periodEnded) {
-        return false;
+    if (credits.allowanceSource === 'free') {
+        // One-time free credits never refill. A missing period end in monthly mode means the
+        // account was created while FREE_CREDITS_REFRESH=never, so start refilling now.
+        const due = freeCreditsRefresh === 'monthly' && (!credits.allowancePeriodEnd || hasEnded(credits.allowancePeriodEnd));
+        if (!due) {
+            return false;
+        }
     }
 
     // Free month rolled over, a subscription lapsed, or a renewal has not arrived yet:
-    // fall back to the free allowance until the next paid invoice resets it.
+    // fall back to the free allowance until the next paid invoice resets it. One-time free
+    // credits are not handed out again when a subscription lapses.
     const reason = credits.allowanceSource === 'subscription' ? 'subscription_allowance_expired' : 'free_allowance';
     const previousAllowance = credits.allowance;
     user.credits = createFreeCreditAccount(timestamp, credits.purchased);
+    if (reason === 'subscription_allowance_expired' && freeCreditsRefresh === 'never') {
+        user.credits.allowance = 0;
+    }
     recordCreditTransaction(db, user, reason, {
         allowanceDelta: user.credits.allowance - previousAllowance,
         reference: `allowance:${user.id}:${user.credits.allowancePeriodStart}`
@@ -1631,7 +1647,8 @@ function spendCredits(db, user, amount, reference) {
     });
     return {
         allowance: fromAllowance,
-        purchased: fromPurchased
+        purchased: fromPurchased,
+        allowancePeriodStart: user.credits.allowancePeriodStart
     };
 }
 
@@ -1639,11 +1656,18 @@ function refundCredits(db, user, charge, reference) {
     if (!charge || (!charge.allowance && !charge.purchased)) {
         return;
     }
-    user.credits.allowance += charge.allowance || 0;
-    user.credits.purchased += charge.purchased || 0;
+    // Allowance credits belong to the period they were spent in; if the allowance has since
+    // been reset (new month, renewal, downgrade) the refund would inflate the new period.
+    const allowanceRefund = charge.allowancePeriodStart === user.credits.allowancePeriodStart ? (charge.allowance || 0) : 0;
+    const purchasedRefund = charge.purchased || 0;
+    if (!allowanceRefund && !purchasedRefund) {
+        return;
+    }
+    user.credits.allowance += allowanceRefund;
+    user.credits.purchased += purchasedRefund;
     recordCreditTransaction(db, user, 'generation_refund', {
-        allowanceDelta: charge.allowance || 0,
-        purchasedDelta: charge.purchased || 0,
+        allowanceDelta: allowanceRefund,
+        purchasedDelta: purchasedRefund,
         reference
     });
 }
@@ -1842,11 +1866,32 @@ function createLocalSubscriptionRecord(user, timestamp = new Date().toISOString(
         billingSubscriptionId: null,
         billingCheckoutSessionId: null,
         billingPriceId: null,
+        stripeStatus: null,
+        endedSubscriptionIds: [],
+        pendingCheckout: null,
         currentPeriodStart: timestamp,
         currentPeriodEnd: null,
         createdAt: timestamp,
         updatedAt: timestamp
     };
+}
+
+function hasLiveStripeSubscription(subscription) {
+    if (!subscription.billingSubscriptionId) return false;
+    // Records written before stripeStatus existed only stored the plan.
+    const status = subscription.stripeStatus || (subscription.plan === 'pro' ? 'active' : null);
+    return LIVE_STRIPE_STATUSES.has(status);
+}
+
+function isEndedStripeSubscription(subscription, stripeSubscriptionId) {
+    return Boolean(stripeSubscriptionId) && (subscription.endedSubscriptionIds || []).includes(stripeSubscriptionId);
+}
+
+function markStripeSubscriptionEnded(subscription, stripeSubscriptionId) {
+    subscription.endedSubscriptionIds = [...new Set([...(subscription.endedSubscriptionIds || []), stripeSubscriptionId])].slice(-20);
+    if (subscription.billingSubscriptionId === stripeSubscriptionId) {
+        subscription.billingSubscriptionId = null;
+    }
 }
 
 function getPlanConfig(planId) {
@@ -1996,12 +2041,21 @@ async function createStripeCheckoutSession(user) {
 
     const db = await getDb();
     const subscription = getUserSubscription(db, user);
-    if (subscription.plan === 'pro' && subscription.billingSubscriptionId) {
+    if (hasLiveStripeSubscription(subscription)) {
         throw new PublicApiError('You already have a subscription. Use Manage billing to change it.', 409, 'already_subscribed');
     }
 
+    // Reuse a checkout that is still open so two tabs (or a double click) can't start two
+    // subscriptions that would both bill.
+    const pending = subscription.pendingCheckout;
+    if (pending?.url && Date.parse(pending.expiresAt) > Date.now() + 60 * 1000) {
+        return { id: pending.id, url: pending.url };
+    }
+
     if (mockStripeResponses) {
-        return createMockCheckoutSession(user, { kind: 'subscription' });
+        const session = createMockCheckoutSession(user, { kind: 'subscription' });
+        await recordPendingSubscriptionCheckout(user.id, session, Date.now() + 30 * 60 * 1000);
+        return session;
     }
 
     const checkoutPayload = {
@@ -2013,6 +2067,8 @@ async function createStripeCheckoutSession(user) {
             }
         ],
         allow_promotion_codes: true,
+        // Stripe allows 30 minutes to 24 hours; a short window keeps the reuse guard tight.
+        expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
         success_url: buildAppUrl('/?billing=success&kind=subscription&session_id={CHECKOUT_SESSION_ID}'),
         cancel_url: buildAppUrl('/?billing=cancel'),
         client_reference_id: user.id,
@@ -2044,11 +2100,24 @@ async function createStripeCheckoutSession(user) {
         checkoutSessionId: session.id,
         billingPriceId: stripeSubscriptionPriceId
     });
+    await recordPendingSubscriptionCheckout(user.id, session, (session.expires_at || 0) * 1000 || Date.now() + 30 * 60 * 1000);
 
     return {
         id: session.id,
         url: session.url
     };
+}
+
+async function recordPendingSubscriptionCheckout(userId, session, expiresAtMs) {
+    await updateDb((db) => {
+        const user = db.users.find((candidate) => candidate.id === userId);
+        if (!user) return;
+        getUserSubscription(db, user).pendingCheckout = {
+            id: session.id,
+            url: session.url,
+            expiresAt: new Date(expiresAtMs).toISOString()
+        };
+    });
 }
 
 async function createCreditPackCheckoutSession(user, packId) {
@@ -2262,6 +2331,12 @@ async function handleStripeWebhook(req) {
 
 function constructStripeWebhookEvent(rawBody, req) {
     if (mockStripeResponses) {
+        // Unsigned test events are only trusted from this machine, never via a proxy.
+        const remote = req.socket?.remoteAddress || '';
+        const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) && !getHeaderValue(req, 'x-forwarded-for');
+        if (!local) {
+            throw new PublicApiError('Missing Stripe webhook signature.', 400, 'stripe_signature_missing');
+        }
         try {
             return JSON.parse(rawBody.toString('utf8'));
         } catch {
@@ -2354,8 +2429,18 @@ async function applyCheckoutSessionCompleted(session, eventId) {
         }
 
         const subscription = getUserSubscription(db, user);
+        if (subscription.pendingCheckout?.id === session.id) {
+            subscription.pendingCheckout = null;
+        }
+        const ignored = checkSubscriptionEventApplies(subscription, stripeSubscriptionId, { eventId, source: 'checkout.session.completed' });
+        if (ignored) return ignored;
+
         subscription.plan = 'pro';
         subscription.status = 'active';
+        // A completed subscription checkout means the first payment went through.
+        subscription.stripeStatus = PAID_PLAN_STRIPE_STATUSES.has(subscription.stripeStatus) && subscription.billingSubscriptionId === stripeSubscriptionId
+            ? subscription.stripeStatus
+            : 'active';
         subscription.billingProvider = 'stripe';
         subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
         subscription.billingSubscriptionId = stripeSubscriptionId || subscription.billingSubscriptionId || null;
@@ -2376,7 +2461,8 @@ async function applyCheckoutSessionCompleted(session, eventId) {
 }
 
 async function applyCreditPackPayment(session, eventId) {
-    if (session.payment_status !== 'paid') {
+    // A 100%-off promotion code completes checkout with no payment due.
+    if (!['paid', 'no_payment_required'].includes(session.payment_status)) {
         return {
             updated: false,
             reason: 'payment_pending'
@@ -2446,7 +2532,7 @@ async function applyInvoicePaid(invoice, eventId) {
     const stripeSubscriptionId = getStripeObjectId(subscriptionDetails?.subscription) || getStripeObjectId(invoice.subscription);
     const customerId = getStripeObjectId(invoice.customer);
     const userId = subscriptionDetails?.metadata?.userId || '';
-    const periodLine = invoice.lines?.data?.find((line) => line?.period) || null;
+    const periodLine = getInvoiceServicePeriodLine(invoice);
     const periodStart = toIsoFromStripeTimestamp(periodLine?.period?.start ?? invoice.period_start);
     const periodEnd = toIsoFromStripeTimestamp(periodLine?.period?.end ?? invoice.period_end);
     const now = new Date().toISOString();
@@ -2468,8 +2554,12 @@ async function applyInvoicePaid(invoice, eventId) {
         }
 
         const { user, subscription } = account;
+        const ignored = checkSubscriptionEventApplies(subscription, stripeSubscriptionId, { eventId, source: 'invoice.paid' });
+        if (ignored) return ignored;
+
         subscription.plan = 'pro';
         subscription.status = 'active';
+        subscription.stripeStatus = 'active';
         subscription.billingProvider = 'stripe';
         subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
         subscription.billingSubscriptionId = stripeSubscriptionId || subscription.billingSubscriptionId || null;
@@ -2493,6 +2583,36 @@ async function applyInvoicePaid(invoice, eventId) {
             credits: publicCredits(user)
         };
     });
+}
+
+// Returns an "ignored" result when an event is about a subscription this account no longer
+// uses: one that already ended (Stripe retries and reorders events), or a second subscription
+// while another one is live.
+function checkSubscriptionEventApplies(subscription, stripeSubscriptionId, { eventId, source }) {
+    if (isEndedStripeSubscription(subscription, stripeSubscriptionId)) {
+        logInfo('stripe_event_for_ended_subscription', { eventId, source, stripeSubscriptionId });
+        return { updated: false, reason: 'subscription_ended' };
+    }
+    if (stripeSubscriptionId && subscription.billingSubscriptionId && subscription.billingSubscriptionId !== stripeSubscriptionId && hasLiveStripeSubscription(subscription)) {
+        logError('stripe_duplicate_subscription', {
+            eventId,
+            source,
+            stripeSubscriptionId,
+            currentSubscriptionId: subscription.billingSubscriptionId,
+            userId: subscription.userId
+        });
+        return { updated: false, reason: 'other_subscription_active' };
+    }
+    return null;
+}
+
+// Renewal invoices can start with proration lines for the previous period; the service period
+// that matters is the latest non-proration line.
+function getInvoiceServicePeriodLine(invoice) {
+    const lines = (invoice.lines?.data || []).filter((line) => line?.period);
+    const regular = lines.filter((line) => !line.proration && !line.parent?.subscription_item_details?.proration);
+    const candidates = regular.length ? regular : lines;
+    return candidates.reduce((best, line) => (!best || (line.period.end || 0) > (best.period.end || 0) ? line : best), null);
 }
 
 function findStripeAccount(db, { stripeSubscriptionId, customerId, userId }) {
@@ -2547,17 +2667,26 @@ async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eve
         }
 
         const { user, subscription } = account;
-        const shouldDowngrade = ['canceled', 'incomplete_expired', 'unpaid'].includes(normalizedStatus);
-        const nextPlan = shouldDowngrade ? 'free' : 'pro';
-        const nextStatus = shouldDowngrade ? 'active' : normalizedStatus;
-        subscription.plan = nextPlan;
-        subscription.status = nextStatus;
+        const ended = ENDED_STRIPE_STATUSES.has(normalizedStatus);
+
+        if (stripeSubscriptionId && subscription.billingSubscriptionId && subscription.billingSubscriptionId !== stripeSubscriptionId) {
+            // Another subscription is on file. An older or duplicate one ending must not touch it;
+            // a new one only takes over if the one on file is no longer live.
+            if (ended) {
+                markStripeSubscriptionEnded(subscription, stripeSubscriptionId);
+                subscription.updatedAt = now;
+                return { updated: false, reason: 'other_subscription_ended' };
+            }
+            const ignored = checkSubscriptionEventApplies(subscription, stripeSubscriptionId, { eventId, source: eventType });
+            if (ignored) return ignored;
+        } else if (isEndedStripeSubscription(subscription, stripeSubscriptionId)) {
+            return { updated: false, reason: 'subscription_ended' };
+        }
+
         subscription.billingProvider = 'stripe';
         subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
-        subscription.billingSubscriptionId = shouldDowngrade
-            ? null
-            : stripeSubscriptionId || subscription.billingSubscriptionId || null;
         subscription.billingPriceId = priceId || subscription.billingPriceId || stripeSubscriptionPriceId || null;
+        subscription.stripeStatus = normalizedStatus;
         subscription.currentPeriodStart = toIsoFromStripeTimestamp(
             stripeSubscription.current_period_start ||
             stripeSubscription.items?.data?.[0]?.current_period_start
@@ -2566,11 +2695,26 @@ async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eve
             stripeSubscription.current_period_end ||
             stripeSubscription.items?.data?.[0]?.current_period_end
         ) || subscription.currentPeriodEnd || null;
+
+        if (ended) {
+            markStripeSubscriptionEnded(subscription, stripeSubscriptionId);
+        } else if (stripeSubscriptionId) {
+            subscription.billingSubscriptionId = stripeSubscriptionId;
+        }
+
+        // Only paying statuses unlock the plan. An incomplete subscription (first payment still
+        // pending) leaves the plan alone; paused/unpaid/ended ones fall back to Free.
+        if (PAID_PLAN_STRIPE_STATUSES.has(normalizedStatus)) {
+            subscription.plan = 'pro';
+        } else if (normalizedStatus !== 'incomplete') {
+            subscription.plan = 'free';
+        }
+        subscription.status = PAID_PLAN_STRIPE_STATUSES.has(normalizedStatus) ? normalizedStatus : 'active';
         subscription.updatedAt = now;
-        user.plan = nextPlan;
+        user.plan = subscription.plan;
         user.updatedAt = now;
 
-        if (shouldDowngrade) {
+        if (subscription.plan === 'free') {
             refreshCreditAllowance(db, user, now);
         }
 
@@ -2967,6 +3111,18 @@ async function reserveGenerationJob(userId, request) {
             throw new PublicApiError('Sign in is required.', 401, 'auth_required');
         }
 
+        // Re-check idempotency inside the same update as the charge so two simultaneous retries
+        // with one key cannot both be charged.
+        if (request.idempotencyKey) {
+            const existing = findIdempotentJob(db, userId, request.idempotencyKey);
+            if (existing?.status === 'running') {
+                throw new PublicApiError('A generation with this idempotency key is still running.', 409, 'idempotency_in_progress');
+            }
+            if (existing?.status === 'completed') {
+                return { replayOf: existing };
+            }
+        }
+
         refreshCreditAllowance(db, user, now);
         const balance = getCreditBalance(user);
         if (balance < creditCost) {
@@ -3013,12 +3169,21 @@ async function reserveGenerationJob(userId, request) {
     });
 }
 
-async function getIdempotentGenerationResult(userId, idempotencyKey) {
-    const db = await getDb();
-    const job = db.generationJobs.find((candidate) => (
+// A key can be reused after a failed attempt, so prefer the attempt that succeeded (or is
+// still running) over older failures.
+function findIdempotentJob(db, userId, idempotencyKey) {
+    const jobs = db.generationJobs.filter((candidate) => (
         candidate.userId === userId &&
         candidate.idempotencyKey === idempotencyKey
     ));
+    return jobs.find((job) => job.status === 'completed' && job.outputAssetIds?.[0])
+        || jobs.find((job) => job.status === 'running')
+        || null;
+}
+
+async function getIdempotentGenerationResult(userId, idempotencyKey) {
+    const db = await getDb();
+    const job = findIdempotentJob(db, userId, idempotencyKey);
 
     if (!job) {
         return null;
@@ -4058,6 +4223,9 @@ async function createGeneration(user, body, options = {}) {
 
     requireProvider(request.provider);
     const job = await reserveGenerationJob(user.id, request);
+    if (job.replayOf) {
+        return getIdempotentGenerationResult(user.id, request.idempotencyKey);
+    }
 
     try {
         throwIfAborted(signal);

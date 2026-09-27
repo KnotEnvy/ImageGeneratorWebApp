@@ -69,7 +69,11 @@ Stripe setup:
 1. Create a recurring monthly price for the subscription (`STRIPE_SUBSCRIPTION_PRICE_ID`) and a one-time price for each credit pack (`CREDIT_PACKS`).
 2. Set `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `APP_BASE_URL`.
 3. Point a webhook at `https://your-domain/api/billing/webhook` with these events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`.
-4. Enable the Customer Portal so subscribers can cancel and see receipts. Promotion codes are accepted at checkout.
+4. Enable the Customer Portal so subscribers can cancel and see receipts. Promotion codes are accepted at checkout (a 100%-off code still grants a pack's credits).
+
+Webhook handling is idempotent and tolerates Stripe's retries and out-of-order delivery: events for a subscription that already ended are ignored, and a second open subscription checkout reuses the first session instead of starting a second subscription. Refunds and chargebacks are not yet reflected in credit balances automatically.
+
+`MOCK_STRIPE_RESPONSES=1` fakes purchases for local testing. Never enable it on a server other people can reach (production mode refuses to start with it).
 
 ## Tests
 

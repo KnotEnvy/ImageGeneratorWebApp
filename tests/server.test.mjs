@@ -646,6 +646,169 @@ test('stripe subscription and credit pack webhooks grant credits once and downgr
     }
 });
 
+test('stripe webhooks tolerate retries, stale events, and out-of-order delivery', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-stripe-order-test-'));
+    const server = await startServer({
+        dataDir,
+        env: {
+            MOCK_STRIPE_RESPONSES: '1',
+            STRIPE_SUBSCRIPTION_PRICE_ID: 'price_test_monthly',
+            FREE_MONTHLY_CREDITS: '5',
+            SUBSCRIPTION_MONTHLY_CREDITS: '50'
+        }
+    });
+    const webhook = (event, headers) => api(server.baseUrl, '/api/billing/webhook', { method: 'POST', body: event, headers });
+    const now = Math.floor(Date.now() / 1000);
+    const subscriptionEvent = (id, type, subscriptionId, status, userId) => ({
+        id,
+        type,
+        data: { object: { id: subscriptionId, customer: 'cus_order', status, metadata: { userId }, items: { data: [{ price: { id: 'price_test_monthly' } }] } } }
+    });
+    const invoiceEvent = (id, invoiceId, subscriptionId, userId, lines) => ({
+        id,
+        type: 'invoice.paid',
+        data: {
+            object: {
+                id: invoiceId,
+                billing_reason: 'subscription_cycle',
+                customer: 'cus_order',
+                parent: { type: 'subscription_details', subscription_details: { subscription: subscriptionId, metadata: { userId } } },
+                lines: { data: lines }
+            }
+        }
+    });
+
+    try {
+        const signup = await api(server.baseUrl, '/api/auth/signup', {
+            method: 'POST',
+            body: { email: `stripe-order-${Date.now()}@example.com`, password: 'Password123!' }
+        });
+        const cookie = signup.cookie;
+        const userId = signup.json.user.id;
+        const billing = async () => (await api(server.baseUrl, '/api/billing/status', { cookie })).json.billing;
+
+        // Two checkout attempts before either finishes reuse one session instead of billing twice.
+        const firstCheckout = await api(server.baseUrl, '/api/billing/checkout', { method: 'POST', cookie, body: { kind: 'subscription' } });
+        const secondCheckout = await api(server.baseUrl, '/api/billing/checkout', { method: 'POST', cookie, body: { kind: 'subscription' } });
+        assert.equal(secondCheckout.status, 200);
+        assert.equal(secondCheckout.json.checkoutSessionId, firstCheckout.json.checkoutSessionId);
+
+        // Unsigned test webhooks are refused when they arrive through a proxy.
+        const proxied = await webhook(subscriptionEvent('evt_proxy', 'customer.subscription.updated', 'sub_1', 'active', userId), { 'X-Forwarded-For': '203.0.113.9' });
+        assert.equal(proxied.status, 400);
+        assert.equal(proxied.json.error.code, 'stripe_signature_missing');
+
+        // An incomplete subscription does not unlock the paid plan.
+        await webhook(subscriptionEvent('evt_incomplete', 'customer.subscription.created', 'sub_1', 'incomplete', userId));
+        assert.equal((await billing()).plan, 'free');
+
+        await webhook(subscriptionEvent('evt_active', 'customer.subscription.updated', 'sub_1', 'active', userId));
+        // A renewal invoice whose first line is a proration for the previous period.
+        const renewal = await webhook(invoiceEvent('evt_inv1', 'in_1', 'sub_1', userId, [
+            { proration: true, period: { start: now - 86400 * 10, end: now - 60 } },
+            { period: { start: now, end: now + 30 * 86400 } }
+        ]));
+        assert.equal(renewal.json.result.credits.allowance, 50);
+        assert.ok(Date.parse(renewal.json.result.credits.refreshesAt) > Date.now() + 29 * 86400 * 1000);
+
+        const deleted = subscriptionEvent('evt_del1', 'customer.subscription.deleted', 'sub_1', 'canceled', userId);
+        await webhook(deleted);
+        let status = await billing();
+        assert.equal(status.plan, 'free');
+        assert.equal(status.credits.allowance, 5);
+
+        // Late or retried events for the canceled subscription must not bring it back.
+        const lateUpdate = await webhook(subscriptionEvent('evt_late', 'customer.subscription.updated', 'sub_1', 'active', userId));
+        assert.equal(lateUpdate.json.result.updated, false);
+        const lateInvoice = await webhook(invoiceEvent('evt_late_inv', 'in_late', 'sub_1', userId, [{ period: { start: now, end: now + 30 * 86400 } }]));
+        assert.equal(lateInvoice.json.result.updated, false);
+        const lateCheckout = await webhook({
+            id: 'evt_late_checkout',
+            type: 'checkout.session.completed',
+            data: { object: { id: firstCheckout.json.checkoutSessionId, mode: 'subscription', customer: 'cus_order', subscription: 'sub_1', client_reference_id: userId, metadata: { userId } } }
+        });
+        assert.equal(lateCheckout.json.result.updated, false);
+        status = await billing();
+        assert.equal(status.plan, 'free');
+        assert.equal(status.credits.balance, 5);
+        assert.equal(status.subscriptionOffer.available, true);
+
+        // Resubscribing works, and a retried deletion of the old subscription leaves the new one alone.
+        await webhook(subscriptionEvent('evt_sub2', 'customer.subscription.created', 'sub_2', 'active', userId));
+        await webhook(invoiceEvent('evt_inv2', 'in_2', 'sub_2', userId, [{ period: { start: now, end: now + 30 * 86400 } }]));
+        const retriedOldDeletion = await webhook(deleted);
+        assert.equal(retriedOldDeletion.json.result.updated, false);
+        status = await billing();
+        assert.equal(status.plan, 'pro');
+        assert.equal(status.credits.allowance, 50);
+        assert.equal(status.subscription.billingSubscriptionId, 'sub_2');
+
+        const blockedCheckout = await api(server.baseUrl, '/api/billing/checkout', { method: 'POST', cookie, body: { kind: 'subscription' } });
+        assert.equal(blockedCheckout.status, 409);
+
+        // A credit pack made free by a 100% promotion code still grants its credits.
+        const freePack = await webhook({
+            id: 'evt_free_pack',
+            type: 'checkout.session.completed',
+            data: { object: { id: 'cs_free_pack', mode: 'payment', payment_status: 'no_payment_required', customer: 'cus_order', client_reference_id: userId, metadata: { userId, kind: 'credit_pack', packId: 'small' } } }
+        });
+        assert.equal(freePack.json.result.creditsGranted, 100);
+    } finally {
+        await server.stop();
+        await rm(dataDir, { recursive: true, force: true });
+    }
+});
+
+test('one-time free credits are not granted again when a subscription lapses', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-never-refresh-test-'));
+    const server = await startServer({
+        dataDir,
+        env: {
+            MOCK_STRIPE_RESPONSES: '1',
+            FREE_MONTHLY_CREDITS: '2',
+            FREE_CREDITS_REFRESH: 'never',
+            SUBSCRIPTION_MONTHLY_CREDITS: '30'
+        }
+    });
+
+    try {
+        const signup = await api(server.baseUrl, '/api/auth/signup', {
+            method: 'POST',
+            body: { email: `never-${Date.now()}@example.com`, password: 'Password123!' }
+        });
+        const cookie = signup.cookie;
+        const userId = signup.json.user.id;
+        assert.equal(signup.json.user.credits.refreshesAt, null);
+
+        const generated = await api(server.baseUrl, '/api/generations', {
+            method: 'POST',
+            cookie,
+            idempotencyKey: 'never-refresh-spend',
+            body: { provider: 'gemini', model: 'gemini-3.1-flash-image', prompt: 'spend the free credits', aspectRatio: '1:1' }
+        });
+        assert.equal(generated.json.credits.balance, 1);
+
+        const checkout = await api(server.baseUrl, '/api/billing/checkout', { method: 'POST', cookie, body: { kind: 'subscription' } });
+        const subscribed = await api(server.baseUrl, '/api/billing/mock-complete', { method: 'POST', cookie, body: { sessionId: checkout.json.checkoutSessionId } });
+        assert.equal(subscribed.json.user.credits.allowance, 30);
+
+        await api(server.baseUrl, '/api/billing/webhook', {
+            method: 'POST',
+            body: {
+                id: 'evt_never_cancel',
+                type: 'customer.subscription.deleted',
+                data: { object: { id: `sub_mock_${userId.slice(0, 8)}`, customer: `cus_mock_${userId.slice(0, 8)}`, status: 'canceled', metadata: { userId } } }
+            }
+        });
+        const status = await api(server.baseUrl, '/api/status', { cookie });
+        assert.equal(status.json.user.plan, 'free');
+        assert.equal(status.json.user.credits.allowance, 0);
+    } finally {
+        await server.stop();
+        await rm(dataDir, { recursive: true, force: true });
+    }
+});
+
 test('mock checkout completion exercises the paywall locally without Stripe', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-mock-checkout-test-'));
     const server = await startServer({
@@ -1122,6 +1285,24 @@ test('aborted generation marks the job failed, refunds credits, and records no u
             db.creditTransactions.map((transaction) => transaction.type),
             ['free_allowance', 'generation_spend', 'generation_refund']
         );
+
+        // Retrying the failed key succeeds once; later retries replay it without another charge.
+        const retryBody = { provider: 'openai', model: 'gpt-image-2.5-flare', prompt: 'abort test image', aspectRatio: '1:1' };
+        const retried = await api(server.baseUrl, '/api/generations', { method: 'POST', cookie, idempotencyKey: 'abort-generation-key', body: retryBody });
+        assert.equal(retried.status, 200);
+        assert.equal(retried.json.credits.balance, 23);
+        const replayed = await api(server.baseUrl, '/api/generations', { method: 'POST', cookie, idempotencyKey: 'abort-generation-key', body: retryBody });
+        assert.equal(replayed.json.meta.idempotentReplay, true);
+        assert.equal(replayed.json.credits.balance, 23);
+
+        // Two simultaneous requests with one fresh key are charged once.
+        const [first, second] = await Promise.all([
+            api(server.baseUrl, '/api/generations', { method: 'POST', cookie, idempotencyKey: 'concurrent-key', body: retryBody }),
+            api(server.baseUrl, '/api/generations', { method: 'POST', cookie, idempotencyKey: 'concurrent-key', body: retryBody })
+        ]);
+        assert.deepEqual([first.status, second.status].sort(), [200, 409]);
+        const after = await api(server.baseUrl, '/api/status', { cookie });
+        assert.equal(after.json.user.credits.balance, 21);
     } finally {
         await server.stop();
         await rm(dataDir, { recursive: true, force: true });
@@ -1422,6 +1603,7 @@ async function api(baseUrl, pathname, options = {}) {
     if (options.cookie) headers.Cookie = options.cookie;
     if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
     if (options.adminToken) headers.Authorization = `Bearer ${options.adminToken}`;
+    Object.assign(headers, options.headers || {});
 
     const response = await fetch(`${baseUrl}${pathname}`, {
         method: options.method || 'GET',

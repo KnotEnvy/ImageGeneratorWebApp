@@ -25,7 +25,9 @@ Product direction changed to a consumer art studio with a free tier and paid cre
 - Rebuilt the browser app: guided Create panel, free-form layered text editor (drag, resize and rotate handles, snapping, 22 fonts, templates, effects, undo/redo), photo looks, paywall dialog, account page, My Art with editable designs (`PUT /api/gallery/:id`), phone layout, and dark mode.
 - Fixed: gallery saves were capped at 1 MB and would have failed for real images (now 40 MB); the old editor darkened, desaturated, blurred, and vignetted every export by default; dev mode served any repo file, including `server.js`, `package.json`, and a repo-local `.data/db.json` (now limited to the browser app).
 - Removed the GitHub Pages deploy scripts, which could only publish a frontend without its server. `npm audit fix` cleared three new advisories in dev tooling.
-- Verification: `npm run lint`, `npm test` (14 tests), `npm run test:e2e` (5 Chromium tests), `npm run build`, `npm audit` (0 vulnerabilities). Real provider and Stripe runs still need real keys.
+- Billing review follow-up: webhook handling now ignores events for subscriptions that already ended and events from a second subscription while one is live; only active, trialing, and past-due subscriptions unlock the paid plan; an open subscription checkout is reused instead of creating a second one; renewal periods skip proration lines; 100%-off packs grant credits; unsigned mock webhooks are only accepted from loopback; webhooks skip the per-IP rate limit; idempotent generation retries after a failure, or in parallel, are charged once; one-time free credits are not re-granted when a subscription lapses; refunds never inflate a newer allowance period.
+- Open item: refunds and chargebacks (`charge.refunded`, `charge.dispute.created`) are not yet reflected in credit balances.
+- Verification: `npm run lint`, `npm test` (16 tests), `npm run test:e2e` (5 Chromium tests), `npm run build`, `npm audit` (0 vulnerabilities). Real provider and Stripe runs still need real keys.
 
 ## Session 1 Progress
 
