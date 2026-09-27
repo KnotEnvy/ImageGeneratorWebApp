@@ -9,6 +9,7 @@ import { InferenceClient } from '@huggingface/inference';
 import { createClient as createRedisClient } from 'redis';
 import { Resend } from 'resend';
 import Stripe from 'stripe';
+import { composeStylePrompt, getStyleById } from './js/styles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,7 +37,11 @@ const sessionCookieName = 'nbs_session';
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 7;
 const emailVerificationTokenMaxAgeMs = 1000 * 60 * 60 * 24;
 const passwordResetTokenMaxAgeMs = 1000 * 60 * 20;
-const starterMonthlyGenerationLimit = Number(process.env.STARTER_MONTHLY_GENERATION_LIMIT || 25);
+const freeMonthlyCredits = readNonNegativeInteger(process.env.FREE_MONTHLY_CREDITS, 20);
+const freeCreditsRefresh = process.env.FREE_CREDITS_REFRESH === 'never' ? 'never' : 'monthly';
+const subscriptionMonthlyCredits = readNonNegativeInteger(process.env.SUBSCRIPTION_MONTHLY_CREDITS, 400);
+const subscriptionPlanLabel = normalizeDisplayLabel(process.env.SUBSCRIPTION_PLAN_LABEL, 'Creator');
+const subscriptionPriceLabel = normalizeDisplayLabel(process.env.SUBSCRIPTION_PRICE_LABEL, '$12/month');
 const passwordIterations = 210000;
 const mockProviderResponses = process.env.MOCK_PROVIDER_RESPONSES === '1';
 const genericApiRateLimit = Number(process.env.API_RATE_LIMIT_PER_MINUTE || 180);
@@ -67,7 +72,8 @@ const stripeRequired = billingProvider === 'stripe' || process.env.STRIPE_REQUIR
 const mockStripeResponses = process.env.MOCK_STRIPE_RESPONSES === '1';
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
-const stripeProPriceId = process.env.STRIPE_PRO_PRICE_ID || '';
+const stripeSubscriptionPriceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID || process.env.STRIPE_PRO_PRICE_ID || '';
+const CREDIT_PACKS = parseCreditPacks(process.env.CREDIT_PACKS);
 const hasExplicitAppBaseUrl = Boolean(process.env.APP_BASE_URL);
 const appBaseUrl = normalizeAbsoluteUrl(process.env.APP_BASE_URL || `http://localhost:${port}`);
 const stripeBillingPortalReturnUrl = normalizeAbsoluteUrl(process.env.STRIPE_BILLING_PORTAL_RETURN_URL || appBaseUrl);
@@ -79,41 +85,87 @@ let stripeClient = null;
 let redisClient = null;
 let redisClientPromise = null;
 let resendClient = null;
+const mockCheckoutSessions = new Map();
+
+// Default engine catalog. Override the whole list with IMAGE_MODELS (JSON) or just the
+// prices with MODEL_CREDIT_COSTS (JSON map of model id -> credits) when provider lineups change.
+const DEFAULT_IMAGE_MODELS = [
+    {
+        id: 'gemini-3.1-flash-image',
+        provider: 'gemini',
+        label: 'Nano Banana 2',
+        description: 'Fast and vibrant. A great everyday choice.',
+        credits: 1,
+        recommended: true
+    },
+    {
+        id: 'gpt-image-2.5-flare',
+        provider: 'openai',
+        label: 'GPT Image Flare',
+        description: 'Crisp detail and dependable lettering.',
+        credits: 2
+    },
+    {
+        id: 'gemini-3-pro-image',
+        provider: 'gemini',
+        label: 'Nano Banana Pro',
+        description: 'Highest fidelity from Google for showpiece art.',
+        credits: 3
+    },
+    {
+        id: 'gpt-image-2.5-sunburst',
+        provider: 'openai',
+        label: 'GPT Image Sunburst',
+        description: 'OpenAI\'s most capable image model.',
+        credits: 4
+    },
+    {
+        id: 'black-forest-labs/FLUX.1-Krea-dev',
+        provider: 'huggingface',
+        label: 'FLUX Krea',
+        description: 'Painterly realism with natural textures.',
+        credits: 1
+    },
+    {
+        id: 'Qwen/Qwen-Image',
+        provider: 'huggingface',
+        label: 'Qwen Image',
+        description: 'Bold graphics and poster-style layouts.',
+        credits: 1
+    }
+];
+const IMAGE_MODELS = parseImageModels(process.env.IMAGE_MODELS, process.env.MODEL_CREDIT_COSTS);
 
 const PROVIDERS = {
     openai: {
-        label: 'OpenAI GPT Image',
+        label: 'OpenAI',
         configured: () => mockProviderResponses || Boolean(process.env.OPENAI_API_KEY),
-        models: ['gpt-image-2']
+        models: getProviderModelIds('openai')
     },
     gemini: {
-        label: 'Google Gemini / Nano Banana',
+        label: 'Google Gemini',
         configured: () => mockProviderResponses || Boolean(process.env.GEMINI_API_KEY),
-        models: ['gemini-3.1-flash-image', 'gemini-3-pro-image', 'gemini-2.5-flash-image']
+        models: getProviderModelIds('gemini')
     },
     huggingface: {
-        label: 'Hugging Face Inference Providers',
+        label: 'Hugging Face',
         configured: () => mockProviderResponses || Boolean(process.env.HF_TOKEN),
-        models: ['black-forest-labs/FLUX.1-Krea-dev', 'Qwen/Qwen-Image', 'ByteDance/Hyper-SD']
+        models: getProviderModelIds('huggingface')
     }
 };
 const requiredProviders = parseRequiredProviders(process.env.REQUIRED_PROVIDERS || '');
 
 const PLAN_CATALOG = {
-    starter: {
-        label: 'Starter',
-        monthlyGenerationLimit: starterMonthlyGenerationLimit,
-        allowedProviders: ['openai', 'gemini', 'huggingface'],
-        allowedModels: ['gpt-image-2', 'gemini-2.5-flash-image', 'black-forest-labs/FLUX.1-Krea-dev']
+    free: {
+        label: 'Free',
+        monthlyCredits: freeMonthlyCredits
     },
     pro: {
-        label: 'Pro',
-        monthlyGenerationLimit: Number(process.env.PRO_MONTHLY_GENERATION_LIMIT || 500),
-        allowedProviders: Object.keys(PROVIDERS),
-        allowedModels: Object.values(PROVIDERS).flatMap((provider) => provider.models)
+        label: subscriptionPlanLabel,
+        monthlyCredits: subscriptionMonthlyCredits
     }
 };
-const activeBillingStatuses = new Set(['active', 'trialing']);
+const SUPPORTED_ASPECT_RATIOS = ['1:1', '4:5', '2:3', '3:2', '16:9', '9:16'];
 
 const contentTypes = {
     '.html': 'text/html; charset=utf-8',
@@ -220,8 +272,11 @@ function validateRuntimeConfiguration() {
         if (!stripeWebhookSecret) {
             issues.push('STRIPE_WEBHOOK_SECRET is required when BILLING_PROVIDER=stripe or STRIPE_REQUIRED=1.');
         }
-        if (!stripeProPriceId) {
-            issues.push('STRIPE_PRO_PRICE_ID is required when BILLING_PROVIDER=stripe or STRIPE_REQUIRED=1.');
+        if (!stripeSubscriptionPriceId) {
+            issues.push('STRIPE_SUBSCRIPTION_PRICE_ID (or legacy STRIPE_PRO_PRICE_ID) is required when BILLING_PROVIDER=stripe or STRIPE_REQUIRED=1.');
+        }
+        if (!CREDIT_PACKS.some((pack) => pack.priceId)) {
+            issues.push('CREDIT_PACKS must include a Stripe priceId for at least one credit pack when BILLING_PROVIDER=stripe or STRIPE_REQUIRED=1.');
         }
         if (!hasExplicitAppBaseUrl || !appBaseUrl) {
             issues.push('APP_BASE_URL must be set to an absolute public URL when Stripe billing is required.');
@@ -341,12 +396,26 @@ async function handleApi(req, res, url, requestId) {
         return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/api/admin/credits') {
+        requireAdmin(req);
+        const body = await readJsonBody(req);
+        const grant = await grantAdminCredits(body);
+        sendJson(res, 200, {
+            ok: true,
+            requestId,
+            grant
+        });
+        return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/status') {
         const user = await getCurrentUser(req);
         sendJson(res, 200, {
             ok: true,
             requestId,
             providers: getProviderStatus(),
+            models: getPublicModelCatalog(),
+            aspectRatios: SUPPORTED_ASPECT_RATIOS,
             user: user ? publicUser(user) : null
         });
         return;
@@ -385,12 +454,32 @@ async function handleApi(req, res, url, requestId) {
 
     if (req.method === 'POST' && url.pathname === '/api/billing/checkout') {
         const user = await requireAuth(req);
-        const checkout = await createStripeCheckoutSession(user);
+        const body = await readJsonBody(req);
+        const checkout = body?.kind === 'credit_pack'
+            ? await createCreditPackCheckoutSession(user, body?.packId)
+            : await createStripeCheckoutSession(user);
         sendJson(res, 200, {
             ok: true,
             requestId,
             checkoutSessionId: checkout.id,
             url: checkout.url
+        });
+        return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/billing/mock-complete') {
+        // Development-only stand-in for Stripe's hosted Checkout + webhook round trip.
+        if (!mockStripeResponses || isProduction) {
+            throw new PublicApiError('API route not found.', 404, 'not_found');
+        }
+        const user = await requireAuth(req);
+        const body = await readJsonBody(req);
+        const result = await completeMockCheckoutSession(user, body?.sessionId);
+        sendJson(res, 200, {
+            ok: true,
+            requestId,
+            result,
+            user: publicUser(await requireAuth(req))
         });
         return;
     }
@@ -535,7 +624,7 @@ async function handleApi(req, res, url, requestId) {
     if (req.method === 'POST' && url.pathname === '/api/gallery') {
         const user = await requireAuth(req);
         assertEmailVerifiedIfRequired(user);
-        const body = await readJsonBody(req);
+        const body = await readJsonBody(req, 40 * 1024 * 1024);
         const item = await createGalleryItem(user.id, body);
         sendJson(res, 201, {
             ok: true,
@@ -769,7 +858,8 @@ function createEmptyDb() {
         userGalleryItems: [],
         contentPolicyEvents: [],
         abuseReports: [],
-        emailDeliveryEvents: []
+        emailDeliveryEvents: [],
+        creditTransactions: []
     };
 }
 
@@ -788,7 +878,8 @@ function normalizeDb(db) {
         userGalleryItems: Array.isArray(db.userGalleryItems) ? db.userGalleryItems : [],
         contentPolicyEvents: Array.isArray(db.contentPolicyEvents) ? db.contentPolicyEvents : [],
         abuseReports: Array.isArray(db.abuseReports) ? db.abuseReports : [],
-        emailDeliveryEvents: normalizeEmailDeliveryEventRecords(db.emailDeliveryEvents)
+        emailDeliveryEvents: normalizeEmailDeliveryEventRecords(db.emailDeliveryEvents),
+        creditTransactions: Array.isArray(db.creditTransactions) ? db.creditTransactions : []
     };
 }
 
@@ -860,16 +951,13 @@ function backfillSubscriptionRecords(db) {
     const now = new Date().toISOString();
 
     for (const user of db.users) {
-        if (!user.plan || !(user.plan in PLAN_CATALOG)) {
-            user.plan = 'starter';
-        }
-
+        user.plan = normalizePlanId(user.plan);
         user.emailVerifiedAt = user.emailVerifiedAt || null;
         user.lastVerificationRequestedAt = user.lastVerificationRequestedAt || null;
         user.lastPasswordResetRequestedAt = user.lastPasswordResetRequestedAt || null;
-
-        if (typeof user.monthlyGenerationLimit !== 'number') {
-            user.monthlyGenerationLimit = getPlanConfig(user.plan).monthlyGenerationLimit;
+        delete user.monthlyGenerationLimit;
+        if (!isValidCreditAccount(user.credits)) {
+            user.credits = createFreeCreditAccount(now);
         }
 
         const subscription = db.subscriptions.find((candidate) => candidate.userId === user.id);
@@ -885,7 +973,6 @@ function backfillSubscriptionRecords(db) {
             subscription.billingPriceId = subscription.billingPriceId || null;
             subscription.updatedAt = subscription.updatedAt || now;
             user.plan = subscription.plan;
-            user.monthlyGenerationLimit = getPlanConfig(subscription.plan).monthlyGenerationLimit;
             continue;
         }
 
@@ -933,8 +1020,8 @@ async function createUserAndSession(body) {
             emailVerifiedAt: null,
             lastVerificationRequestedAt: null,
             lastPasswordResetRequestedAt: null,
-            plan: 'starter',
-            monthlyGenerationLimit: getPlanConfig('starter').monthlyGenerationLimit,
+            plan: 'free',
+            credits: createFreeCreditAccount(now),
             createdAt: now,
             updatedAt: now
         };
@@ -947,6 +1034,10 @@ async function createUserAndSession(body) {
         db.users.push(user);
         db.subscriptions.push(subscription);
         db.sessions.push(session.record);
+        recordCreditTransaction(db, user, 'free_allowance', {
+            allowanceDelta: user.credits.allowance,
+            reference: `signup:${user.id}`
+        });
         if (verificationToken) {
             user.lastVerificationRequestedAt = now;
             db.authTokens.push(verificationToken.record);
@@ -1324,7 +1415,11 @@ async function getCurrentUser(req) {
         return null;
     }
 
-    return db.users.find((user) => user.id === session.userId) || null;
+    const user = db.users.find((candidate) => candidate.id === session.userId) || null;
+    if (user && refreshCreditAllowance(db, user)) {
+        await writeDb(db);
+    }
+    return user;
 }
 
 async function requireAuth(req) {
@@ -1356,8 +1451,6 @@ function getBearerToken(req) {
 function publicUser(user) {
     const db = dbCache || createEmptyDb();
     const entitlements = getUserEntitlements(db, user);
-    const monthlyUsed = getMonthlyGenerationCount(db, user.id);
-    const monthlyLimit = entitlements.monthlyGenerationLimit;
     return {
         id: user.id,
         email: user.email,
@@ -1365,45 +1458,43 @@ function publicUser(user) {
         emailVerifiedAt: user.emailVerifiedAt || null,
         emailVerificationRequired,
         plan: entitlements.plan,
-        monthlyGenerationLimit: monthlyLimit,
+        planLabel: entitlements.planLabel,
         subscription: entitlements.subscription,
-        entitlements: {
-            plan: entitlements.plan,
-            planLabel: entitlements.planLabel,
-            allowedProviders: entitlements.allowedProviders,
-            allowedModels: entitlements.allowedModels,
-            monthlyGenerationLimit: monthlyLimit
-        },
-        quota: {
-            monthlyUsed,
-            monthlyLimit,
-            monthlyRemaining: Math.max(0, monthlyLimit - monthlyUsed)
-        }
+        credits: publicCredits(user)
     };
 }
 
 function publicBillingStatus(user) {
     const db = dbCache || createEmptyDb();
     const entitlements = getUserEntitlements(db, user);
-    const monthlyUsed = getMonthlyGenerationCount(db, user.id);
+    const subscriptionActive = entitlements.plan === 'pro';
 
     return {
         billingProvider,
+        plan: entitlements.plan,
+        planLabel: entitlements.planLabel,
+        credits: publicCredits(user),
         checkoutAvailable: isStripeCheckoutConfigured(),
         portalAvailable: Boolean(entitlements.subscription.billingCustomerId) && isStripeApiConfigured(),
         subscription: entitlements.subscription,
-        entitlements: {
-            plan: entitlements.plan,
-            planLabel: entitlements.planLabel,
-            allowedProviders: entitlements.allowedProviders,
-            allowedModels: entitlements.allowedModels,
-            monthlyGenerationLimit: entitlements.monthlyGenerationLimit
+        freeTier: {
+            monthlyCredits: freeMonthlyCredits,
+            refresh: freeCreditsRefresh
         },
-        quota: {
-            monthlyUsed,
-            monthlyLimit: entitlements.monthlyGenerationLimit,
-            monthlyRemaining: Math.max(0, entitlements.monthlyGenerationLimit - monthlyUsed)
-        }
+        subscriptionOffer: {
+            label: subscriptionPlanLabel,
+            priceLabel: subscriptionPriceLabel,
+            monthlyCredits: subscriptionMonthlyCredits,
+            available: isStripeCheckoutConfigured() && !subscriptionActive,
+            active: subscriptionActive
+        },
+        creditPacks: CREDIT_PACKS.map((pack) => ({
+            id: pack.id,
+            label: pack.label,
+            credits: pack.credits,
+            priceLabel: pack.priceLabel,
+            available: isCreditPackCheckoutConfigured(pack)
+        }))
     };
 }
 
@@ -1414,9 +1505,6 @@ function getUserEntitlements(db, user) {
     return {
         plan: subscription.plan,
         planLabel: plan.label,
-        monthlyGenerationLimit: plan.monthlyGenerationLimit,
-        allowedProviders: [...plan.allowedProviders],
-        allowedModels: [...plan.allowedModels],
         subscription: {
             id: subscription.id,
             plan: subscription.plan,
@@ -1430,6 +1518,285 @@ function getUserEntitlements(db, user) {
             currentPeriodEnd: subscription.currentPeriodEnd
         }
     };
+}
+
+// Credits: every account has two buckets. The allowance comes from the plan (free monthly
+// credits or the subscription's monthly credits) and resets each period. Purchased credits
+// come from credit packs or admin grants and never expire. Spending drains the allowance first.
+function createFreeCreditAccount(timestamp = new Date().toISOString(), purchased = 0) {
+    const period = freeCreditsRefresh === 'monthly' ? getCalendarMonthPeriod(timestamp) : { start: timestamp, end: null };
+    return {
+        allowance: freeMonthlyCredits,
+        allowanceSource: 'free',
+        allowancePeriodStart: period.start,
+        allowancePeriodEnd: period.end,
+        purchased
+    };
+}
+
+function isValidCreditAccount(credits) {
+    return Boolean(
+        credits &&
+        Number.isInteger(credits.allowance) &&
+        Number.isInteger(credits.purchased) &&
+        ['free', 'subscription'].includes(credits.allowanceSource)
+    );
+}
+
+function getCalendarMonthPeriod(timestamp) {
+    const date = new Date(timestamp);
+    const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
+    return {
+        start: start.toISOString(),
+        end: end.toISOString()
+    };
+}
+
+function getCreditBalance(user) {
+    return (user.credits?.allowance || 0) + (user.credits?.purchased || 0);
+}
+
+function publicCredits(user) {
+    const credits = isValidCreditAccount(user.credits) ? user.credits : createFreeCreditAccount();
+    return {
+        balance: credits.allowance + credits.purchased,
+        allowance: credits.allowance,
+        purchased: credits.purchased,
+        allowanceSource: credits.allowanceSource,
+        monthlyAllowance: credits.allowanceSource === 'subscription' ? subscriptionMonthlyCredits : freeMonthlyCredits,
+        refreshesAt: credits.allowancePeriodEnd || null
+    };
+}
+
+// Returns true when the account changed and should be persisted.
+function refreshCreditAllowance(db, user, timestamp = new Date().toISOString()) {
+    if (!isValidCreditAccount(user.credits)) {
+        user.credits = createFreeCreditAccount(timestamp);
+        return true;
+    }
+
+    const credits = user.credits;
+    const now = Date.parse(timestamp);
+    const periodEnded = Boolean(credits.allowancePeriodEnd) && now >= Date.parse(credits.allowancePeriodEnd);
+    const plan = getUserSubscription(db, user).plan;
+
+    if (credits.allowanceSource === 'subscription' && plan === 'pro' && !periodEnded) {
+        return false;
+    }
+
+    if (credits.allowanceSource === 'free' && !periodEnded) {
+        return false;
+    }
+
+    // Free month rolled over, a subscription lapsed, or a renewal has not arrived yet:
+    // fall back to the free allowance until the next paid invoice resets it.
+    const reason = credits.allowanceSource === 'subscription' ? 'subscription_allowance_expired' : 'free_allowance';
+    const previousAllowance = credits.allowance;
+    user.credits = createFreeCreditAccount(timestamp, credits.purchased);
+    recordCreditTransaction(db, user, reason, {
+        allowanceDelta: user.credits.allowance - previousAllowance,
+        reference: `allowance:${user.id}:${user.credits.allowancePeriodStart}`
+    });
+    return true;
+}
+
+function spendCredits(db, user, amount, reference) {
+    const fromAllowance = Math.min(user.credits.allowance, amount);
+    const fromPurchased = amount - fromAllowance;
+    user.credits.allowance -= fromAllowance;
+    user.credits.purchased -= fromPurchased;
+    recordCreditTransaction(db, user, 'generation_spend', {
+        allowanceDelta: -fromAllowance,
+        purchasedDelta: -fromPurchased,
+        reference
+    });
+    return {
+        allowance: fromAllowance,
+        purchased: fromPurchased
+    };
+}
+
+function refundCredits(db, user, charge, reference) {
+    if (!charge || (!charge.allowance && !charge.purchased)) {
+        return;
+    }
+    user.credits.allowance += charge.allowance || 0;
+    user.credits.purchased += charge.purchased || 0;
+    recordCreditTransaction(db, user, 'generation_refund', {
+        allowanceDelta: charge.allowance || 0,
+        purchasedDelta: charge.purchased || 0,
+        reference
+    });
+}
+
+function hasCreditTransaction(db, type, reference) {
+    return db.creditTransactions.some((transaction) => transaction.type === type && transaction.reference === reference);
+}
+
+function grantPurchasedCredits(db, user, amount, type, reference, note = null) {
+    if (hasCreditTransaction(db, type, reference)) {
+        return false;
+    }
+    user.credits.purchased += amount;
+    recordCreditTransaction(db, user, type, {
+        purchasedDelta: amount,
+        reference,
+        note
+    });
+    return true;
+}
+
+function setSubscriptionAllowance(db, user, { periodStart, periodEnd, reference }) {
+    if (hasCreditTransaction(db, 'subscription_allowance', reference)) {
+        return false;
+    }
+    const previousAllowance = user.credits.allowance;
+    user.credits = {
+        allowance: subscriptionMonthlyCredits,
+        allowanceSource: 'subscription',
+        allowancePeriodStart: periodStart || new Date().toISOString(),
+        allowancePeriodEnd: periodEnd || null,
+        purchased: user.credits.purchased
+    };
+    recordCreditTransaction(db, user, 'subscription_allowance', {
+        allowanceDelta: subscriptionMonthlyCredits - previousAllowance,
+        reference
+    });
+    return true;
+}
+
+function recordCreditTransaction(db, user, type, { allowanceDelta = 0, purchasedDelta = 0, reference = null, note = null } = {}) {
+    const transaction = {
+        id: randomUUID(),
+        userId: user.id,
+        type,
+        allowanceDelta,
+        purchasedDelta,
+        amount: allowanceDelta + purchasedDelta,
+        balanceAfter: getCreditBalance(user),
+        reference,
+        note,
+        createdAt: new Date().toISOString()
+    };
+    db.creditTransactions.push(transaction);
+    return transaction;
+}
+
+async function grantAdminCredits(body) {
+    const credits = Number(body?.credits);
+    if (!Number.isInteger(credits) || credits < 1 || credits > 100000) {
+        throw new PublicApiError('Credits must be a whole number between 1 and 100000.', 400, 'invalid_credits');
+    }
+    const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : null;
+
+    return updateDb((db) => {
+        const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+        const user = db.users.find((candidate) => (
+            (body?.userId && candidate.id === body.userId) ||
+            (email && candidate.email === email)
+        ));
+        if (!user) {
+            throw new PublicApiError('No account matches that email or user id.', 404, 'user_not_found');
+        }
+
+        refreshCreditAllowance(db, user);
+        grantPurchasedCredits(db, user, credits, 'admin_grant', `admin:${randomUUID()}`, note);
+        return {
+            userId: user.id,
+            email: user.email,
+            creditsGranted: credits,
+            credits: publicCredits(user)
+        };
+    });
+}
+
+function getModelCreditCost(modelId) {
+    return IMAGE_MODELS.find((model) => model.id === modelId)?.credits ?? 1;
+}
+
+function getPublicModelCatalog() {
+    return IMAGE_MODELS.map((model) => ({
+        id: model.id,
+        provider: model.provider,
+        label: model.label,
+        description: model.description,
+        credits: model.credits,
+        recommended: Boolean(model.recommended),
+        configured: PROVIDERS[model.provider]?.configured() || false
+    }));
+}
+
+function getProviderModelIds(provider) {
+    return IMAGE_MODELS.filter((model) => model.provider === provider).map((model) => model.id);
+}
+
+function parseImageModels(modelsJson, costsJson) {
+    let models = DEFAULT_IMAGE_MODELS;
+    if (modelsJson) {
+        const parsed = JSON.parse(modelsJson);
+        if (!Array.isArray(parsed) || !parsed.length) {
+            throw new Error('IMAGE_MODELS must be a non-empty JSON array.');
+        }
+        models = parsed;
+    }
+
+    const costs = costsJson ? JSON.parse(costsJson) : {};
+    return models.map((model) => {
+        if (!model?.id || !['openai', 'gemini', 'huggingface'].includes(model.provider)) {
+            throw new Error(`IMAGE_MODELS entry is invalid: ${JSON.stringify(model)}`);
+        }
+        const credits = Number(costs[model.id] ?? model.credits ?? 1);
+        if (!Number.isInteger(credits) || credits < 0) {
+            throw new Error(`Credit cost for ${model.id} must be a non-negative whole number.`);
+        }
+        return {
+            id: String(model.id),
+            provider: model.provider,
+            label: normalizeDisplayLabel(model.label, model.id),
+            description: typeof model.description === 'string' ? model.description.slice(0, 160) : '',
+            credits,
+            recommended: Boolean(model.recommended)
+        };
+    });
+}
+
+function parseCreditPacks(packsJson) {
+    const defaults = [
+        { id: 'small', label: 'Handful', credits: 100, priceLabel: '$5' },
+        { id: 'large', label: 'Studio stack', credits: 500, priceLabel: '$20' }
+    ];
+    const packs = packsJson ? JSON.parse(packsJson) : defaults;
+    if (!Array.isArray(packs)) {
+        throw new Error('CREDIT_PACKS must be a JSON array.');
+    }
+
+    return packs.map((pack) => {
+        const credits = Number(pack?.credits);
+        if (!pack?.id || !/^[a-z0-9_-]{1,40}$/i.test(pack.id) || !Number.isInteger(credits) || credits < 1) {
+            throw new Error(`CREDIT_PACKS entry is invalid: ${JSON.stringify(pack)}`);
+        }
+        return {
+            id: pack.id,
+            label: normalizeDisplayLabel(pack.label, `${credits} credits`),
+            credits,
+            priceLabel: normalizeDisplayLabel(pack.priceLabel, ''),
+            priceId: typeof pack.priceId === 'string' ? pack.priceId.trim() : ''
+        };
+    });
+}
+
+function readNonNegativeInteger(value, fallback) {
+    if (value === undefined || value === '') {
+        return fallback;
+    }
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeDisplayLabel(value, fallback) {
+    const normalized = typeof value === 'string' ? value.trim().slice(0, 80) : '';
+    return normalized || fallback;
 }
 
 function getUserSubscription(db, user) {
@@ -1446,7 +1813,7 @@ function getUserSubscription(db, user) {
 }
 
 function createLocalSubscriptionRecord(user, timestamp = new Date().toISOString()) {
-    const plan = normalizePlanId(user.plan || 'starter');
+    const plan = normalizePlanId(user.plan);
     return {
         id: randomUUID(),
         userId: user.id,
@@ -1472,7 +1839,7 @@ function normalizePlanId(planId) {
     if (typeof planId === 'string' && planId in PLAN_CATALOG) {
         return planId;
     }
-    return 'starter';
+    return 'free';
 }
 
 function normalizeSubscriptionStatus(status) {
@@ -1563,7 +1930,11 @@ function isStripeApiConfigured() {
 }
 
 function isStripeCheckoutConfigured() {
-    return mockStripeResponses || Boolean(stripeSecretKey && stripeProPriceId && appBaseUrl);
+    return mockStripeResponses || Boolean(stripeSecretKey && stripeSubscriptionPriceId && appBaseUrl);
+}
+
+function isCreditPackCheckoutConfigured(pack) {
+    return mockStripeResponses || Boolean(stripeSecretKey && pack.priceId && appBaseUrl);
 }
 
 function isStripeWebhookConfigured() {
@@ -1605,25 +1976,31 @@ function getStripeClient() {
 async function createStripeCheckoutSession(user) {
     requireStripeCheckoutConfigured();
 
-    if (mockStripeResponses) {
-        return createMockStripeCheckoutSession(user);
-    }
-
     const db = await getDb();
     const subscription = getUserSubscription(db, user);
+    if (subscription.plan === 'pro' && subscription.billingSubscriptionId) {
+        throw new PublicApiError('You already have a subscription. Use Manage billing to change it.', 409, 'already_subscribed');
+    }
+
+    if (mockStripeResponses) {
+        return createMockCheckoutSession(user, { kind: 'subscription' });
+    }
+
     const checkoutPayload = {
         mode: 'subscription',
         line_items: [
             {
-                price: stripeProPriceId,
+                price: stripeSubscriptionPriceId,
                 quantity: 1
             }
         ],
-        success_url: buildAppUrl('/?billing=success&session_id={CHECKOUT_SESSION_ID}'),
+        allow_promotion_codes: true,
+        success_url: buildAppUrl('/?billing=success&kind=subscription&session_id={CHECKOUT_SESSION_ID}'),
         cancel_url: buildAppUrl('/?billing=cancel'),
         client_reference_id: user.id,
         metadata: {
             userId: user.id,
+            kind: 'subscription',
             plan: 'pro'
         },
         subscription_data: {
@@ -1647,7 +2024,7 @@ async function createStripeCheckoutSession(user) {
 
     await recordStripeCheckoutAttempt(user.id, {
         checkoutSessionId: session.id,
-        billingPriceId: stripeProPriceId
+        billingPriceId: stripeSubscriptionPriceId
     });
 
     return {
@@ -1656,17 +2033,161 @@ async function createStripeCheckoutSession(user) {
     };
 }
 
-async function createMockStripeCheckoutSession(user) {
+async function createCreditPackCheckoutSession(user, packId) {
+    const pack = CREDIT_PACKS.find((candidate) => candidate.id === packId);
+    if (!pack) {
+        throw new PublicApiError('That credit pack is not available.', 400, 'invalid_credit_pack');
+    }
+    if (!isCreditPackCheckoutConfigured(pack)) {
+        throw new PublicApiError('Stripe checkout is not configured on this server.', 503, 'stripe_not_configured');
+    }
+
+    if (mockStripeResponses) {
+        return createMockCheckoutSession(user, { kind: 'credit_pack', packId: pack.id });
+    }
+
+    const db = await getDb();
+    const subscription = getUserSubscription(db, user);
+    const metadata = {
+        userId: user.id,
+        kind: 'credit_pack',
+        packId: pack.id,
+        credits: String(pack.credits)
+    };
+    const checkoutPayload = {
+        mode: 'payment',
+        line_items: [
+            {
+                price: pack.priceId,
+                quantity: 1
+            }
+        ],
+        allow_promotion_codes: true,
+        success_url: buildAppUrl('/?billing=success&kind=credit_pack&session_id={CHECKOUT_SESSION_ID}'),
+        cancel_url: buildAppUrl('/?billing=cancel'),
+        client_reference_id: user.id,
+        metadata,
+        payment_intent_data: {
+            metadata
+        }
+    };
+
+    if (subscription.billingCustomerId) {
+        checkoutPayload.customer = subscription.billingCustomerId;
+    } else {
+        checkoutPayload.customer_email = user.email;
+        checkoutPayload.customer_creation = 'always';
+    }
+
+    const session = await getStripeClient().checkout.sessions.create(checkoutPayload);
+    if (!session.url) {
+        throw new PublicApiError('Stripe did not return a Checkout URL.', 502, 'stripe_checkout_url_missing');
+    }
+
+    return {
+        id: session.id,
+        url: session.url
+    };
+}
+
+function createMockCheckoutSession(user, { kind, packId = null }) {
     const id = `cs_test_${randomUUID().replace(/-/g, '')}`;
-    await recordStripeCheckoutAttempt(user.id, {
-        checkoutSessionId: id,
-        billingPriceId: stripeProPriceId || 'price_mock_pro'
+    mockCheckoutSessions.set(id, {
+        userId: user.id,
+        kind,
+        packId
     });
 
     return {
         id,
         url: buildAppUrl(`/?mock_checkout_session=${encodeURIComponent(id)}`)
     };
+}
+
+// Simulates what Stripe would send after a successful hosted Checkout so the paywall can be
+// exercised locally. Only reachable when MOCK_STRIPE_RESPONSES=1 outside production.
+async function completeMockCheckoutSession(user, sessionId) {
+    const pending = mockCheckoutSessions.get(sessionId);
+    if (!pending || pending.userId !== user.id) {
+        throw new PublicApiError('Checkout session not found.', 404, 'checkout_session_not_found');
+    }
+    mockCheckoutSessions.delete(sessionId);
+
+    const customerId = `cus_mock_${user.id.slice(0, 8)}`;
+    if (pending.kind === 'credit_pack') {
+        return processStripeWebhookEvent({
+            id: `evt_mock_${randomUUID()}`,
+            type: 'checkout.session.completed',
+            data: {
+                object: {
+                    id: sessionId,
+                    mode: 'payment',
+                    payment_status: 'paid',
+                    customer: customerId,
+                    client_reference_id: user.id,
+                    metadata: {
+                        userId: user.id,
+                        kind: 'credit_pack',
+                        packId: pending.packId
+                    }
+                }
+            }
+        });
+    }
+
+    const stripeSubscriptionId = `sub_mock_${user.id.slice(0, 8)}`;
+    await processStripeWebhookEvent({
+        id: `evt_mock_${randomUUID()}`,
+        type: 'checkout.session.completed',
+        data: {
+            object: {
+                id: sessionId,
+                mode: 'subscription',
+                payment_status: 'paid',
+                customer: customerId,
+                subscription: stripeSubscriptionId,
+                client_reference_id: user.id,
+                metadata: {
+                    userId: user.id,
+                    kind: 'subscription',
+                    plan: 'pro'
+                }
+            }
+        }
+    });
+
+    const periodStart = Math.floor(Date.now() / 1000);
+    return processStripeWebhookEvent({
+        id: `evt_mock_${randomUUID()}`,
+        type: 'invoice.paid',
+        data: {
+            object: {
+                id: `in_mock_${randomUUID().replace(/-/g, '')}`,
+                billing_reason: 'subscription_create',
+                customer: customerId,
+                parent: {
+                    type: 'subscription_details',
+                    subscription_details: {
+                        subscription: stripeSubscriptionId,
+                        metadata: {
+                            userId: user.id,
+                            plan: 'pro'
+                        }
+                    }
+                },
+                lines: {
+                    data: [
+                        {
+                            period: {
+                                start: periodStart,
+                                end: periodStart + 30 * 24 * 60 * 60
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    });
 }
 
 async function recordStripeCheckoutAttempt(userId, values) {
@@ -1751,7 +2272,17 @@ async function processStripeWebhookEvent(event) {
     }
 
     if (event.type === 'checkout.session.completed') {
-        return applyCheckoutSessionCompleted(event.data.object, event.id);
+        return event.data.object.mode === 'payment'
+            ? applyCreditPackPayment(event.data.object, event.id)
+            : applyCheckoutSessionCompleted(event.data.object, event.id);
+    }
+
+    if (event.type === 'checkout.session.async_payment_succeeded' && event.data.object.mode === 'payment') {
+        return applyCreditPackPayment(event.data.object, event.id);
+    }
+
+    if (event.type === 'invoice.paid') {
+        return applyInvoicePaid(event.data.object, event.id);
     }
 
     if (
@@ -1810,10 +2341,9 @@ async function applyCheckoutSessionCompleted(session, eventId) {
         subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
         subscription.billingSubscriptionId = stripeSubscriptionId || subscription.billingSubscriptionId || null;
         subscription.billingCheckoutSessionId = session.id || subscription.billingCheckoutSessionId || null;
-        subscription.billingPriceId = stripeProPriceId || subscription.billingPriceId || null;
+        subscription.billingPriceId = stripeSubscriptionPriceId || subscription.billingPriceId || null;
         subscription.updatedAt = now;
         user.plan = 'pro';
-        user.monthlyGenerationLimit = getPlanConfig('pro').monthlyGenerationLimit;
         user.updatedAt = now;
 
         return {
@@ -1824,6 +2354,150 @@ async function applyCheckoutSessionCompleted(session, eventId) {
             status: subscription.status
         };
     });
+}
+
+async function applyCreditPackPayment(session, eventId) {
+    if (session.payment_status !== 'paid') {
+        return {
+            updated: false,
+            reason: 'payment_pending'
+        };
+    }
+
+    const userId = session.client_reference_id || session.metadata?.userId || '';
+    const pack = CREDIT_PACKS.find((candidate) => candidate.id === session.metadata?.packId);
+    const credits = pack?.credits ?? Number(session.metadata?.credits);
+    const customerId = getStripeObjectId(session.customer);
+
+    if (!userId || !Number.isInteger(credits) || credits < 1) {
+        logError('stripe_credit_pack_unresolved', {
+            eventId,
+            checkoutSessionId: session.id || null,
+            userId: userId || null,
+            packId: session.metadata?.packId || null
+        });
+        return {
+            updated: false,
+            reason: 'credit_pack_unresolved'
+        };
+    }
+
+    return updateDb((db) => {
+        const user = db.users.find((candidate) => candidate.id === userId);
+        if (!user) {
+            logError('stripe_credit_pack_unknown_user', {
+                eventId,
+                checkoutSessionId: session.id || null,
+                userId
+            });
+            return {
+                updated: false,
+                reason: 'user_not_found'
+            };
+        }
+
+        refreshCreditAllowance(db, user);
+        const granted = grantPurchasedCredits(db, user, credits, 'credit_pack_purchase', `checkout:${session.id}`, pack?.label || null);
+        const subscription = getUserSubscription(db, user);
+        if (customerId && !subscription.billingCustomerId) {
+            subscription.billingCustomerId = customerId;
+            subscription.billingProvider = 'stripe';
+            subscription.updatedAt = new Date().toISOString();
+        }
+
+        return {
+            updated: granted,
+            reason: granted ? null : 'already_applied',
+            userId: user.id,
+            creditsGranted: granted ? credits : 0,
+            credits: publicCredits(user)
+        };
+    });
+}
+
+async function applyInvoicePaid(invoice, eventId) {
+    if (!['subscription_create', 'subscription_cycle'].includes(invoice.billing_reason)) {
+        return {
+            updated: false,
+            reason: 'billing_reason_ignored'
+        };
+    }
+
+    const subscriptionDetails = invoice.parent?.subscription_details || invoice.subscription_details || null;
+    const stripeSubscriptionId = getStripeObjectId(subscriptionDetails?.subscription) || getStripeObjectId(invoice.subscription);
+    const customerId = getStripeObjectId(invoice.customer);
+    const userId = subscriptionDetails?.metadata?.userId || '';
+    const periodLine = invoice.lines?.data?.find((line) => line?.period) || null;
+    const periodStart = toIsoFromStripeTimestamp(periodLine?.period?.start ?? invoice.period_start);
+    const periodEnd = toIsoFromStripeTimestamp(periodLine?.period?.end ?? invoice.period_end);
+    const now = new Date().toISOString();
+
+    return updateDb((db) => {
+        const account = findStripeAccount(db, { stripeSubscriptionId, customerId, userId });
+        if (!account) {
+            logError('stripe_invoice_unknown_account', {
+                eventId,
+                invoiceId: invoice.id || null,
+                stripeSubscriptionId,
+                customerId,
+                userId: userId || null
+            });
+            return {
+                updated: false,
+                reason: 'account_not_found'
+            };
+        }
+
+        const { user, subscription } = account;
+        subscription.plan = 'pro';
+        subscription.status = 'active';
+        subscription.billingProvider = 'stripe';
+        subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
+        subscription.billingSubscriptionId = stripeSubscriptionId || subscription.billingSubscriptionId || null;
+        subscription.currentPeriodStart = periodStart || subscription.currentPeriodStart || null;
+        subscription.currentPeriodEnd = periodEnd || subscription.currentPeriodEnd || null;
+        subscription.updatedAt = now;
+        user.plan = 'pro';
+        user.updatedAt = now;
+
+        const granted = setSubscriptionAllowance(db, user, {
+            periodStart,
+            periodEnd,
+            reference: `invoice:${invoice.id}`
+        });
+
+        return {
+            updated: granted,
+            reason: granted ? null : 'already_applied',
+            userId: user.id,
+            plan: 'pro',
+            credits: publicCredits(user)
+        };
+    });
+}
+
+function findStripeAccount(db, { stripeSubscriptionId, customerId, userId }) {
+    let subscription = db.subscriptions.find((candidate) => (
+        stripeSubscriptionId &&
+        candidate.billingSubscriptionId === stripeSubscriptionId
+    ));
+
+    if (!subscription && customerId) {
+        subscription = db.subscriptions.find((candidate) => candidate.billingCustomerId === customerId);
+    }
+
+    let user = subscription
+        ? db.users.find((candidate) => candidate.id === subscription.userId)
+        : null;
+
+    if (!user && userId) {
+        user = db.users.find((candidate) => candidate.id === userId);
+        if (user) {
+            subscription = getUserSubscription(db, user);
+        }
+    }
+
+    return user && subscription ? { user, subscription } : null;
 }
 
 async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eventId) {
@@ -1838,27 +2512,8 @@ async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eve
     const now = new Date().toISOString();
 
     return updateDb((db) => {
-        let subscription = db.subscriptions.find((candidate) => (
-            stripeSubscriptionId &&
-            candidate.billingSubscriptionId === stripeSubscriptionId
-        ));
-
-        if (!subscription && customerId) {
-            subscription = db.subscriptions.find((candidate) => candidate.billingCustomerId === customerId);
-        }
-
-        let user = subscription
-            ? db.users.find((candidate) => candidate.id === subscription.userId)
-            : null;
-
-        if (!user && userId) {
-            user = db.users.find((candidate) => candidate.id === userId);
-            if (user) {
-                subscription = getUserSubscription(db, user);
-            }
-        }
-
-        if (!user || !subscription) {
+        const account = findStripeAccount(db, { stripeSubscriptionId, customerId, userId });
+        if (!account) {
             logError('stripe_subscription_unknown_account', {
                 eventId,
                 eventType,
@@ -1872,15 +2527,18 @@ async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eve
             };
         }
 
+        const { user, subscription } = account;
         const shouldDowngrade = ['canceled', 'incomplete_expired', 'unpaid'].includes(normalizedStatus);
-        const nextPlan = shouldDowngrade ? 'starter' : 'pro';
+        const nextPlan = shouldDowngrade ? 'free' : 'pro';
         const nextStatus = shouldDowngrade ? 'active' : normalizedStatus;
         subscription.plan = nextPlan;
         subscription.status = nextStatus;
         subscription.billingProvider = 'stripe';
         subscription.billingCustomerId = customerId || subscription.billingCustomerId || null;
-        subscription.billingSubscriptionId = stripeSubscriptionId || subscription.billingSubscriptionId || null;
-        subscription.billingPriceId = priceId || subscription.billingPriceId || stripeProPriceId || null;
+        subscription.billingSubscriptionId = shouldDowngrade
+            ? null
+            : stripeSubscriptionId || subscription.billingSubscriptionId || null;
+        subscription.billingPriceId = priceId || subscription.billingPriceId || stripeSubscriptionPriceId || null;
         subscription.currentPeriodStart = toIsoFromStripeTimestamp(
             stripeSubscription.current_period_start ||
             stripeSubscription.items?.data?.[0]?.current_period_start
@@ -1891,8 +2549,11 @@ async function applyStripeSubscriptionChanged(stripeSubscription, eventType, eve
         ) || subscription.currentPeriodEnd || null;
         subscription.updatedAt = now;
         user.plan = nextPlan;
-        user.monthlyGenerationLimit = getPlanConfig(nextPlan).monthlyGenerationLimit;
         user.updatedAt = now;
+
+        if (shouldDowngrade) {
+            refreshCreditAllowance(db, user, now);
+        }
 
         return {
             updated: true,
@@ -1946,6 +2607,13 @@ async function getAdminSummary() {
     const emailDeliveryByType = countBy(db.emailDeliveryEvents, (event) => event.type || 'unknown');
     const emailDeliveryByStatus = countBy(db.emailDeliveryEvents, (event) => event.status || 'unknown');
     const emailDeliveryByProvider = countBy(db.emailDeliveryEvents, (event) => event.provider || 'unknown');
+    const creditTransactionsThisMonth = db.creditTransactions.filter((transaction) => (
+        String(transaction.createdAt || '').startsWith(currentMonth)
+    ));
+    const creditsByType = creditTransactionsThisMonth.reduce((totals, transaction) => {
+        totals[transaction.type] = (totals[transaction.type] || 0) + (transaction.amount || 0);
+        return totals;
+    }, {});
     const failedJobs = db.generationJobs
         .filter((job) => job.status === 'failed')
         .sort((a, b) => Date.parse(b.completedAt || b.createdAt) - Date.parse(a.completedAt || a.createdAt))
@@ -1962,7 +2630,15 @@ async function getAdminSummary() {
             providerUsageEvents: db.providerUsageEvents.length,
             contentPolicyEvents: db.contentPolicyEvents.length,
             abuseReports: db.abuseReports.length,
-            emailDeliveryEvents: db.emailDeliveryEvents.length
+            emailDeliveryEvents: db.emailDeliveryEvents.length,
+            creditTransactions: db.creditTransactions.length,
+            paidSubscribers: db.subscriptions.filter((subscription) => subscription.plan === 'pro').length
+        },
+        credits: {
+            month: currentMonth,
+            netByType: creditsByType,
+            spentThisMonth: -(creditsByType.generation_spend || 0) - (creditsByType.generation_refund || 0),
+            purchasedThisMonth: creditsByType.credit_pack_purchase || 0
         },
         jobsByStatus,
         usage: {
@@ -2256,80 +2932,66 @@ function getCookie(req, name) {
     return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
 }
 
-async function assertCanGenerate(userId, request) {
-    const db = await getDb();
-    const user = db.users.find((candidate) => candidate.id === userId);
-    if (!user) {
-        throw new PublicApiError('Sign in is required.', 401, 'auth_required');
-    }
-
-    const entitlements = getUserEntitlements(db, user);
-    if (!activeBillingStatuses.has(entitlements.subscription.status)) {
-        throw new PublicApiError('Your subscription is not active.', 402, 'subscription_inactive');
-    }
-
-    if (!entitlements.allowedProviders.includes(request.provider) || !entitlements.allowedModels.includes(request.model)) {
-        throw new PublicApiError('This image model is not available on your current plan.', 403, 'plan_model_not_allowed', {
-            plan: entitlements.plan,
-            provider: request.provider,
-            model: request.model
-        });
-    }
-
-    const used = getMonthlyGenerationCount(db, userId);
-    if (used >= entitlements.monthlyGenerationLimit) {
-        throw new PublicApiError('Monthly generation quota exceeded.', 402, 'quota_exceeded');
-    }
-
-    return entitlements;
-}
-
-function getMonthlyGenerationCount(db, userId) {
-    const month = currentMonthKey();
-    return db.providerUsageEvents.filter((event) => (
-        event.userId === userId &&
-        event.type === 'image_generation' &&
-        event.month === month
-    )).length;
-}
-
 function currentMonthKey(date = new Date()) {
     return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-async function createGenerationJob(userId, request) {
+// Checks the balance, charges credits, and records the running job in one datastore update so
+// two simultaneous requests cannot both spend the same credits.
+async function reserveGenerationJob(userId, request) {
     const now = new Date().toISOString();
-    const job = {
-        id: randomUUID(),
-        userId,
-        status: 'running',
-        provider: request.provider,
-        model: request.model,
-        prompt: request.prompt,
-        aspectRatio: request.aspectRatio,
-        quality: request.quality,
-        outputFormat: request.outputFormat,
-        plan: request.plan,
-        subscriptionId: request.subscriptionId,
-        inputAssetIds: [],
-        outputAssetIds: [],
-        idempotencyKey: request.idempotencyKey || null,
-        providerRequestId: null,
-        providerUsageJson: null,
-        costEstimateCents: null,
-        errorCode: null,
-        safeErrorMessage: null,
-        rawErrorJson: null,
-        createdAt: now,
-        startedAt: now,
-        completedAt: null
-    };
+    const creditCost = getModelCreditCost(request.model);
 
-    await updateDb((db) => {
+    return updateDb((db) => {
+        const user = db.users.find((candidate) => candidate.id === userId);
+        if (!user) {
+            throw new PublicApiError('Sign in is required.', 401, 'auth_required');
+        }
+
+        refreshCreditAllowance(db, user, now);
+        const balance = getCreditBalance(user);
+        if (balance < creditCost) {
+            throw new PublicApiError('You are out of credits.', 402, 'insufficient_credits', {
+                balance,
+                cost: creditCost
+            });
+        }
+
+        const entitlements = getUserEntitlements(db, user);
+        const jobId = randomUUID();
+        const creditCharge = spendCredits(db, user, creditCost, `job:${jobId}`);
+        const job = {
+            id: jobId,
+            userId,
+            status: 'running',
+            provider: request.provider,
+            model: request.model,
+            prompt: request.prompt,
+            styleId: request.styleId || null,
+            aspectRatio: request.aspectRatio,
+            quality: request.quality,
+            outputFormat: request.outputFormat,
+            plan: entitlements.plan,
+            subscriptionId: entitlements.subscription.id,
+            creditCost,
+            creditCharge,
+            inputAssetIds: [],
+            outputAssetIds: [],
+            idempotencyKey: request.idempotencyKey || null,
+            providerRequestId: null,
+            providerUsageJson: null,
+            costEstimateCents: null,
+            errorCode: null,
+            safeErrorMessage: null,
+            rawErrorJson: null,
+            createdAt: now,
+            startedAt: now,
+            completedAt: null
+        };
         db.generationJobs.push(job);
-    });
 
-    return job;
+        return job;
+    });
 }
 
 async function getIdempotentGenerationResult(userId, idempotencyKey) {
@@ -2350,6 +3012,9 @@ async function getIdempotentGenerationResult(userId, idempotencyKey) {
             generationJobId: job.id,
             provider: job.provider,
             model: job.model,
+            styleId: job.styleId || null,
+            creditsSpent: 0,
+            credits: await getUserCreditsSnapshot(userId),
             meta: {
                 ...(job.providerUsageJson || {}),
                 idempotentReplay: true
@@ -2390,6 +3055,12 @@ async function failGenerationJob(jobId, error) {
         job.safeErrorMessage = error instanceof PublicApiError ? error.message : 'Generation failed.';
         job.rawErrorJson = serializeErrorDetails(error);
         job.completedAt = now;
+
+        const user = db.users.find((candidate) => candidate.id === job.userId);
+        if (user && job.creditCharge && !job.creditsRefunded) {
+            refundCredits(db, user, job.creditCharge, `job:${job.id}`);
+            job.creditsRefunded = true;
+        }
     });
 }
 
@@ -2406,6 +3077,7 @@ async function createUsageEvent(userId, event) {
             provider: event.provider,
             model: event.model,
             quantity: event.quantity,
+            credits: event.credits,
             costEstimateCents: event.costEstimateCents,
             generationJobId: event.generationJobId,
             createdAt: now.toISOString()
@@ -2714,6 +3386,8 @@ async function createGalleryItem(userId, body) {
         prompt: typeof body?.prompt === 'string' ? body.prompt.slice(0, 5000) : '',
         stylePreset: typeof body?.stylePreset === 'string' ? body.stylePreset.slice(0, 120) : 'None',
         modelUsed: typeof body?.modelUsed === 'string' ? body.modelUsed.slice(0, 200) : 'unknown',
+        aspectRatio: normalizeAspectRatio(body?.aspectRatio),
+        design: sanitizeJsonObject(body?.design),
         overlays: sanitizeJsonObject(body?.overlays),
         filters: sanitizeJsonObject(body?.filters),
         createdAt: now,
@@ -2770,6 +3444,8 @@ function formatGalleryItem(item) {
         prompt: item.prompt,
         stylePreset: item.stylePreset,
         modelUsed: item.modelUsed,
+        aspectRatio: item.aspectRatio || '1:1',
+        design: item.design || null,
         overlays: item.overlays,
         filters: item.filters,
         timestamp: Date.parse(item.createdAt),
@@ -2912,6 +3588,15 @@ function collectGalleryPolicyText(body) {
         }
     }
 
+    const layers = body?.design?.layers;
+    if (Array.isArray(layers)) {
+        for (const layer of layers) {
+            if (layer && typeof layer.text === 'string') {
+                parts.push(layer.text);
+            }
+        }
+    }
+
     return parts.join('\n').trim() || 'gallery save';
 }
 
@@ -3046,7 +3731,8 @@ async function checkDataStoreReadiness() {
             'userGalleryItems',
             'contentPolicyEvents',
             'abuseReports',
-            'emailDeliveryEvents'
+            'emailDeliveryEvents',
+            'creditTransactions'
         ];
         const missingCollections = requiredCollections.filter((key) => !Array.isArray(db[key]));
 
@@ -3263,9 +3949,12 @@ function normalizeGenerationRequest(body) {
     const aspectRatio = normalizeAspectRatio(body?.aspectRatio);
     const quality = normalizeQuality(body?.quality);
     const outputFormat = normalizeOutputFormat(body?.outputFormat);
+    const style = getStyleById(body?.styleId);
 
     return {
         prompt,
+        providerPrompt: composeStylePrompt(prompt, style, { textSpace: normalizeTextSpace(body?.textSpace) }),
+        styleId: style?.id || null,
         provider,
         model,
         aspectRatio,
@@ -3293,11 +3982,7 @@ async function createGeneration(user, body, options = {}) {
     }
 
     requireProvider(request.provider);
-    const entitlements = await assertCanGenerate(user.id, request);
-    request.plan = entitlements.plan;
-    request.subscriptionId = entitlements.subscription.id;
-
-    const job = await createGenerationJob(user.id, request);
+    const job = await reserveGenerationJob(user.id, request);
 
     try {
         throwIfAborted(signal);
@@ -3322,9 +4007,10 @@ async function createGeneration(user, body, options = {}) {
             generationJobId: job.id,
             provider: result.provider,
             model: result.model,
-            plan: entitlements.plan,
-            subscriptionId: entitlements.subscription.id,
+            plan: job.plan,
+            subscriptionId: job.subscriptionId,
             quantity: 1,
+            credits: job.creditCost,
             costEstimateCents: null
         });
 
@@ -3334,6 +4020,9 @@ async function createGeneration(user, body, options = {}) {
             generationJobId: job.id,
             provider: result.provider,
             model: result.model,
+            styleId: job.styleId,
+            creditsSpent: job.creditCost,
+            credits: await getUserCreditsSnapshot(user.id),
             meta: result.meta
         };
     } catch (error) {
@@ -3342,8 +4031,15 @@ async function createGeneration(user, body, options = {}) {
     }
 }
 
+async function getUserCreditsSnapshot(userId) {
+    const db = await getDb();
+    const user = db.users.find((candidate) => candidate.id === userId);
+    return user ? publicCredits(user) : null;
+}
+
 async function generateImage(request, options = {}) {
-    const { prompt, provider, model, aspectRatio, quality, outputFormat } = request;
+    const { provider, model, aspectRatio, quality, outputFormat } = request;
+    const prompt = request.providerPrompt || request.prompt;
     const { signal } = options;
     throwIfAborted(signal);
 
@@ -3440,7 +4136,7 @@ async function generateGeminiImage({ prompt, model, aspectRatio, signal }) {
                     }
                 ],
                 generationConfig: {
-                    responseModalities: ['Image'],
+                    responseModalities: ['TEXT', 'IMAGE'],
                     responseFormat: {
                         image: imageConfig
                     }
@@ -3453,6 +4149,10 @@ async function generateGeminiImage({ prompt, model, aspectRatio, signal }) {
 
     const imagePart = findGeminiImagePart(data);
     if (!imagePart?.data) {
+        const finishReasons = (data.candidates || []).map((candidate) => candidate.finishReason || '').join(' ');
+        if (data.promptFeedback?.blockReason || /SAFETY|PROHIBITED|BLOCKLIST/.test(finishReasons)) {
+            throw new PublicApiError('The image service declined this description. Try rewording it.', 422, 'provider_content_blocked', data);
+        }
         throw new PublicApiError('Gemini did not return image data.', 502, 'provider_empty_response', data);
     }
 
@@ -3544,10 +4244,28 @@ async function postJsonToProvider(url, { headers, body, publicMessage, signal })
     }
 
     if (!response.ok) {
-        throw new PublicApiError(publicMessage, response.status, 'provider_request_failed', data);
+        throw toProviderError(response.status, data, publicMessage);
     }
 
     return data;
+}
+
+// Provider HTTP statuses describe the server's relationship with the provider (for example a
+// bad server API key is a 401), so never pass them straight through to the browser.
+function toProviderError(providerStatus, data, publicMessage) {
+    if (providerStatus === 429) {
+        return new PublicApiError('The image service is busy right now. Please try again in a minute.', 503, 'provider_busy', data);
+    }
+
+    const errorText = JSON.stringify(data?.error || data || '').toLowerCase();
+    if (providerStatus === 400 && /moderation|content_policy|safety|blocked/.test(errorText)) {
+        return new PublicApiError('The image service declined this description. Try rewording it.', 422, 'provider_content_blocked', data);
+    }
+
+    return new PublicApiError(publicMessage, 502, 'provider_request_failed', {
+        providerStatus,
+        response: data
+    });
 }
 
 function throwIfAborted(signal) {
@@ -3654,10 +4372,14 @@ function normalizeModel(provider, requestedModel) {
 }
 
 function normalizeAspectRatio(aspectRatio) {
-    if (['1:1', '16:9', '9:16'].includes(aspectRatio)) {
+    if (SUPPORTED_ASPECT_RATIOS.includes(aspectRatio)) {
         return aspectRatio;
     }
     return '1:1';
+}
+
+function normalizeTextSpace(textSpace) {
+    return ['top', 'bottom'].includes(textSpace) ? textSpace : 'none';
 }
 
 function normalizeQuality(quality) {
@@ -3691,20 +4413,31 @@ function normalizeIdempotencyKey(idempotencyKey) {
     return normalized;
 }
 
+// GPT Image custom sizes must use multiples of 16 within the provider's pixel-count limits.
 function mapOpenAIImageSize(aspectRatio) {
-    if (aspectRatio === '16:9') return '1536x864';
-    if (aspectRatio === '9:16') return '864x1536';
-    return '1024x1024';
+    const sizes = {
+        '4:5': '1024x1280',
+        '2:3': '1024x1536',
+        '3:2': '1536x1024',
+        '16:9': '1536x864',
+        '9:16': '864x1536'
+    };
+    return sizes[aspectRatio] || '1024x1024';
 }
 
 function mapHuggingFaceDimensions(aspectRatio) {
-    if (aspectRatio === '16:9') return { width: 1024, height: 576 };
-    if (aspectRatio === '9:16') return { width: 576, height: 1024 };
-    return { width: 1024, height: 1024 };
+    const dimensions = {
+        '4:5': { width: 896, height: 1120 },
+        '2:3': { width: 832, height: 1248 },
+        '3:2': { width: 1248, height: 832 },
+        '16:9': { width: 1024, height: 576 },
+        '9:16': { width: 576, height: 1024 }
+    };
+    return dimensions[aspectRatio] || { width: 1024, height: 1024 };
 }
 
-async function readJsonBody(req) {
-    const rawBody = await readRawBody(req);
+async function readJsonBody(req, maxBytes) {
+    const rawBody = await readRawBody(req, maxBytes);
 
     if (!rawBody.length) {
         return {};
@@ -3880,9 +4613,18 @@ async function serveStaticFile(res, url) {
         throw new PublicApiError('File not found.', 404, 'not_found');
     }
 
-    const requestedPath = path.resolve(staticRoot, `.${pathname}`);
+    let requestedPath = path.resolve(staticRoot, `.${pathname}`);
     if (!requestedPath.startsWith(staticRoot)) {
         throw new PublicApiError('File not found.', 404, 'not_found');
+    }
+
+    // In dev, mirror Vite's public/ directory, which the production build copies into dist/.
+    if (isDev && !existsSync(requestedPath)) {
+        const publicRoot = path.resolve(__dirname, 'public');
+        const publicPath = path.resolve(publicRoot, `.${pathname}`);
+        if (publicPath.startsWith(publicRoot)) {
+            requestedPath = publicPath;
+        }
     }
 
     if (!existsSync(requestedPath) || !statSync(requestedPath).isFile()) {

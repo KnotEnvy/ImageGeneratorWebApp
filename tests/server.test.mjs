@@ -12,12 +12,12 @@ const repoRoot = path.resolve(__dirname, '..');
 const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
 let nextTestPort = 6200;
 
-test('auth, gallery, generation, quota, and idempotency work with mocked providers', async () => {
+test('auth, gallery, generation, credits, and idempotency work with mocked providers', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-test-'));
     const server = await startServer({
         dataDir,
         env: {
-            STARTER_MONTHLY_GENERATION_LIMIT: '2'
+            FREE_MONTHLY_CREDITS: '3'
         }
     });
 
@@ -44,7 +44,7 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
             method: 'POST',
             body: {
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'test',
                 aspectRatio: '1:1'
             }
@@ -60,10 +60,14 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
             }
         });
         assert.equal(signup.status, 201);
-        assert.equal(signup.json.user.quota.monthlyLimit, 2);
+        assert.equal(signup.json.user.plan, 'free');
+        assert.equal(signup.json.user.credits.balance, 3);
+        assert.equal(signup.json.user.credits.allowance, 3);
+        assert.equal(signup.json.user.credits.purchased, 0);
+        assert.equal(signup.json.user.credits.allowanceSource, 'free');
+        assert.ok(Date.parse(signup.json.user.credits.refreshesAt) > Date.now());
         assert.equal(signup.json.user.subscription.status, 'active');
         assert.equal(signup.json.user.subscription.billingProvider, 'local');
-        assert.deepEqual(signup.json.user.entitlements.allowedModels.includes('gpt-image-2'), true);
         const cookie = signup.cookie;
         assert.ok(cookie.includes('nbs_session='));
 
@@ -71,12 +75,18 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
         assert.equal(status.status, 200);
         assert.equal(status.json.providers.openai.configured, true);
         assert.equal(status.json.user.email, signup.json.user.email);
-        assert.equal(status.json.user.entitlements.plan, 'starter');
+        assert.equal(status.json.user.plan, 'free');
+        const flare = status.json.models.find((model) => model.id === 'gpt-image-2.5-flare');
+        assert.equal(flare.credits, 2);
+        assert.equal(flare.configured, true);
+        assert.ok(status.json.aspectRatios.includes('2:3'));
 
         const billing = await api(server.baseUrl, '/api/billing/status', { cookie });
         assert.equal(billing.status, 200);
         assert.equal(billing.json.billing.subscription.status, 'active');
-        assert.equal(billing.json.billing.entitlements.monthlyGenerationLimit, 2);
+        assert.equal(billing.json.billing.freeTier.monthlyCredits, 3);
+        assert.equal(billing.json.billing.creditPacks.length, 2);
+        assert.equal(billing.json.billing.creditPacks.every((pack) => pack.available === false), true);
 
         const emptyGallery = await api(server.baseUrl, '/api/gallery', { cookie });
         assert.deepEqual(emptyGallery.json.items, []);
@@ -111,9 +121,11 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
 
         const generationBody = {
             provider: 'openai',
-            model: 'gpt-image-2',
+            model: 'gpt-image-2.5-flare',
             prompt: 'mock test image',
-            aspectRatio: '1:1',
+            styleId: 'watercolor',
+            textSpace: 'top',
+            aspectRatio: '2:3',
             quality: 'medium',
             outputFormat: 'png'
         };
@@ -125,6 +137,9 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
         });
         assert.equal(firstGeneration.status, 200);
         assert.match(firstGeneration.json.imageUrl, /^\/api\/assets\//);
+        assert.equal(firstGeneration.json.styleId, 'watercolor');
+        assert.equal(firstGeneration.json.creditsSpent, 2);
+        assert.equal(firstGeneration.json.credits.balance, 1);
 
         const replayedGeneration = await api(server.baseUrl, '/api/generations', {
             method: 'POST',
@@ -135,27 +150,44 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
         assert.equal(replayedGeneration.status, 200);
         assert.equal(replayedGeneration.json.generationJobId, firstGeneration.json.generationJobId);
         assert.equal(replayedGeneration.json.meta.idempotentReplay, true);
+        assert.equal(replayedGeneration.json.creditsSpent, 0);
+        assert.equal(replayedGeneration.json.credits.balance, 1);
 
-        const secondGeneration = await api(server.baseUrl, '/api/generations', {
+        const outOfCredits = await api(server.baseUrl, '/api/generations', {
             method: 'POST',
             cookie,
             idempotencyKey: 'test-generation-key-2',
             body: generationBody
         });
-        assert.equal(secondGeneration.status, 200);
+        assert.equal(outOfCredits.status, 402);
+        assert.equal(outOfCredits.json.error.code, 'insufficient_credits');
 
-        const overQuota = await api(server.baseUrl, '/api/generations', {
+        const cheaperGeneration = await api(server.baseUrl, '/api/generations', {
             method: 'POST',
             cookie,
             idempotencyKey: 'test-generation-key-3',
-            body: generationBody
+            body: {
+                ...generationBody,
+                provider: 'gemini',
+                model: 'gemini-3.1-flash-image'
+            }
         });
-        assert.equal(overQuota.status, 402);
-        assert.equal(overQuota.json.error.code, 'quota_exceeded');
+        assert.equal(cheaperGeneration.status, 200);
+        assert.equal(cheaperGeneration.json.credits.balance, 0);
 
         const db = JSON.parse(await readFile(path.join(dataDir, 'db.json'), 'utf8'));
         assert.equal(db.subscriptions.length, 1);
-        assert.equal(db.subscriptions[0].plan, 'starter');
+        assert.equal(db.subscriptions[0].plan, 'free');
+        assert.equal(db.users[0].credits.allowance, 0);
+        const firstJob = db.generationJobs.find((job) => job.id === firstGeneration.json.generationJobId);
+        assert.equal(firstJob.prompt, 'mock test image');
+        assert.equal(firstJob.styleId, 'watercolor');
+        assert.equal(firstJob.creditCost, 2);
+        assert.deepEqual(
+            db.creditTransactions.map((transaction) => transaction.type),
+            ['free_allowance', 'generation_spend', 'generation_spend']
+        );
+        assert.equal(db.creditTransactions.at(-1).balanceAfter, 0);
         assert.equal(db.sessions.length, 1);
         assert.equal(Object.hasOwn(db.sessions[0], 'token'), false);
         assert.match(db.sessions[0].tokenHash, /^[a-f0-9]{64}$/);
@@ -165,9 +197,9 @@ test('auth, gallery, generation, quota, and idempotency work with mocked provide
         assert.deepEqual(db.imageAssets.every((asset) => asset.storageKey?.startsWith(`assets/${signup.json.user.id}/`)), true);
         assert.deepEqual(db.imageAssets.every((asset) => asset.relativePath === asset.storageKey), true);
         assert.equal(db.generationJobs.filter((job) => job.status === 'completed').length, 2);
-        assert.deepEqual(db.generationJobs.every((job) => job.plan === 'starter'), true);
+        assert.deepEqual(db.generationJobs.every((job) => job.plan === 'free'), true);
         assert.equal(db.providerUsageEvents.length, 2);
-        assert.deepEqual(db.providerUsageEvents.every((event) => event.plan === 'starter'), true);
+        assert.deepEqual(db.providerUsageEvents.map((event) => event.credits), [2, 1]);
 
         const deleted = await api(server.baseUrl, `/api/gallery/${saved.json.item.id}`, {
             method: 'DELETE',
@@ -213,7 +245,7 @@ test('email verification can gate generation with hashed single-use tokens', asy
             idempotencyKey: 'email-unverified-generation',
             body: {
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'blocked until email verified',
                 aspectRatio: '1:1'
             }
@@ -260,7 +292,7 @@ test('email verification can gate generation with hashed single-use tokens', asy
             idempotencyKey: 'email-verified-generation',
             body: {
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'allowed after email verified',
                 aspectRatio: '1:1'
             }
@@ -409,13 +441,18 @@ test('stripe billing endpoints fail closed when checkout is not configured', asy
     }
 });
 
-test('stripe checkout, webhook, portal, and downgrade flow update local entitlements', async () => {
+test('stripe subscription and credit pack webhooks grant credits once and downgrade cleanly', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-stripe-flow-test-'));
     const server = await startServer({
         dataDir,
         env: {
             MOCK_STRIPE_RESPONSES: '1',
-            STRIPE_PRO_PRICE_ID: 'price_test_pro'
+            STRIPE_SUBSCRIPTION_PRICE_ID: 'price_test_monthly',
+            FREE_MONTHLY_CREDITS: '5',
+            SUBSCRIPTION_MONTHLY_CREDITS: '50',
+            CREDIT_PACKS: JSON.stringify([
+                { id: 'small', label: 'Handful', credits: 100, priceId: 'price_test_small', priceLabel: '$5' }
+            ])
         }
     });
 
@@ -438,9 +475,15 @@ test('stripe checkout, webhook, portal, and downgrade flow update local entitlem
         assert.equal(missingPortal.status, 409);
         assert.equal(missingPortal.json.error.code, 'stripe_customer_missing');
 
+        const billingBefore = await api(server.baseUrl, '/api/billing/status', { cookie });
+        assert.equal(billingBefore.json.billing.subscriptionOffer.available, true);
+        assert.equal(billingBefore.json.billing.subscriptionOffer.monthlyCredits, 50);
+        assert.equal(billingBefore.json.billing.creditPacks[0].available, true);
+
         const checkout = await api(server.baseUrl, '/api/billing/checkout', {
             method: 'POST',
-            cookie
+            cookie,
+            body: { kind: 'subscription' }
         });
         assert.equal(checkout.status, 200);
         assert.match(checkout.json.checkoutSessionId, /^cs_test_/);
@@ -458,10 +501,7 @@ test('stripe checkout, webhook, portal, and downgrade flow update local entitlem
                         customer: 'cus_test_customer',
                         subscription: 'sub_test_subscription',
                         client_reference_id: userId,
-                        metadata: {
-                            userId,
-                            plan: 'pro'
-                        }
+                        metadata: { userId, plan: 'pro' }
                     }
                 }
             }
@@ -469,27 +509,104 @@ test('stripe checkout, webhook, portal, and downgrade flow update local entitlem
         assert.equal(checkoutWebhook.status, 200);
         assert.equal(checkoutWebhook.json.result.updated, true);
 
+        const periodStart = Math.floor(Date.now() / 1000);
+        const invoicePaid = {
+            id: 'evt_mock_invoice_paid',
+            type: 'invoice.paid',
+            data: {
+                object: {
+                    id: 'in_test_first',
+                    billing_reason: 'subscription_create',
+                    customer: 'cus_test_customer',
+                    parent: {
+                        type: 'subscription_details',
+                        subscription_details: {
+                            subscription: 'sub_test_subscription',
+                            metadata: { userId, plan: 'pro' }
+                        }
+                    },
+                    lines: {
+                        data: [{ period: { start: periodStart, end: periodStart + 30 * 86400 } }]
+                    }
+                }
+            }
+        };
+        const firstInvoice = await api(server.baseUrl, '/api/billing/webhook', { method: 'POST', body: invoicePaid });
+        assert.equal(firstInvoice.status, 200);
+        assert.equal(firstInvoice.json.result.updated, true);
+        assert.equal(firstInvoice.json.result.credits.allowance, 50);
+
+        const replayedInvoice = await api(server.baseUrl, '/api/billing/webhook', { method: 'POST', body: invoicePaid });
+        assert.equal(replayedInvoice.json.result.updated, false);
+        assert.equal(replayedInvoice.json.result.reason, 'already_applied');
+
         const proBilling = await api(server.baseUrl, '/api/billing/status', { cookie });
-        assert.equal(proBilling.status, 200);
-        assert.equal(proBilling.json.billing.entitlements.plan, 'pro');
-        assert.equal(proBilling.json.billing.subscription.billingProvider, 'stripe');
+        assert.equal(proBilling.json.billing.plan, 'pro');
+        assert.equal(proBilling.json.billing.credits.balance, 50);
+        assert.equal(proBilling.json.billing.credits.allowanceSource, 'subscription');
         assert.equal(proBilling.json.billing.subscription.billingCustomerId, 'cus_test_customer');
         assert.equal(proBilling.json.billing.subscription.billingSubscriptionId, 'sub_test_subscription');
-        assert.equal(proBilling.json.billing.subscription.billingPriceId, 'price_test_pro');
+        assert.equal(proBilling.json.billing.subscription.billingPriceId, 'price_test_monthly');
+        assert.equal(proBilling.json.billing.subscriptionOffer.active, true);
         assert.equal(proBilling.json.billing.portalAvailable, true);
 
-        const premiumGeneration = await api(server.baseUrl, '/api/generations', {
+        const duplicateSubscription = await api(server.baseUrl, '/api/billing/checkout', {
             method: 'POST',
             cookie,
-            idempotencyKey: 'stripe-pro-premium-model',
+            body: { kind: 'subscription' }
+        });
+        assert.equal(duplicateSubscription.status, 409);
+        assert.equal(duplicateSubscription.json.error.code, 'already_subscribed');
+
+        const invalidPack = await api(server.baseUrl, '/api/billing/checkout', {
+            method: 'POST',
+            cookie,
+            body: { kind: 'credit_pack', packId: 'nope' }
+        });
+        assert.equal(invalidPack.status, 400);
+        assert.equal(invalidPack.json.error.code, 'invalid_credit_pack');
+
+        const packCheckout = await api(server.baseUrl, '/api/billing/checkout', {
+            method: 'POST',
+            cookie,
+            body: { kind: 'credit_pack', packId: 'small' }
+        });
+        assert.equal(packCheckout.status, 200);
+
+        const packEvent = {
+            id: 'evt_mock_pack_paid',
+            type: 'checkout.session.completed',
+            data: {
+                object: {
+                    id: packCheckout.json.checkoutSessionId,
+                    mode: 'payment',
+                    payment_status: 'paid',
+                    customer: 'cus_test_customer',
+                    client_reference_id: userId,
+                    metadata: { userId, kind: 'credit_pack', packId: 'small', credits: '100' }
+                }
+            }
+        };
+        const packWebhook = await api(server.baseUrl, '/api/billing/webhook', { method: 'POST', body: packEvent });
+        assert.equal(packWebhook.json.result.updated, true);
+        assert.equal(packWebhook.json.result.creditsGranted, 100);
+        const replayedPack = await api(server.baseUrl, '/api/billing/webhook', { method: 'POST', body: packEvent });
+        assert.equal(replayedPack.json.result.updated, false);
+
+        const generation = await api(server.baseUrl, '/api/generations', {
+            method: 'POST',
+            cookie,
+            idempotencyKey: 'stripe-pro-generation',
             body: {
-                provider: 'huggingface',
-                model: 'Qwen/Qwen-Image',
+                provider: 'gemini',
+                model: 'gemini-3-pro-image',
                 prompt: 'premium model after checkout',
                 aspectRatio: '1:1'
             }
         });
-        assert.equal(premiumGeneration.status, 200);
+        assert.equal(generation.status, 200);
+        assert.equal(generation.json.credits.allowance, 47);
+        assert.equal(generation.json.credits.purchased, 100);
 
         const portal = await api(server.baseUrl, '/api/billing/portal', {
             method: 'POST',
@@ -508,18 +625,8 @@ test('stripe checkout, webhook, portal, and downgrade flow update local entitlem
                         id: 'sub_test_subscription',
                         customer: 'cus_test_customer',
                         status: 'canceled',
-                        metadata: {
-                            userId
-                        },
-                        items: {
-                            data: [
-                                {
-                                    price: {
-                                        id: 'price_test_pro'
-                                    }
-                                }
-                            ]
-                        }
+                        metadata: { userId },
+                        items: { data: [{ price: { id: 'price_test_monthly' } }] }
                     }
                 }
             }
@@ -527,25 +634,73 @@ test('stripe checkout, webhook, portal, and downgrade flow update local entitlem
         assert.equal(deletedWebhook.status, 200);
         assert.equal(deletedWebhook.json.result.updated, true);
 
-        const starterBilling = await api(server.baseUrl, '/api/billing/status', { cookie });
-        assert.equal(starterBilling.status, 200);
-        assert.equal(starterBilling.json.billing.entitlements.plan, 'starter');
-        assert.equal(starterBilling.json.billing.subscription.status, 'active');
-        assert.equal(starterBilling.json.billing.subscription.billingProvider, 'stripe');
+        const freeBilling = await api(server.baseUrl, '/api/billing/status', { cookie });
+        assert.equal(freeBilling.json.billing.plan, 'free');
+        assert.equal(freeBilling.json.billing.credits.allowanceSource, 'free');
+        assert.equal(freeBilling.json.billing.credits.allowance, 5);
+        assert.equal(freeBilling.json.billing.credits.purchased, 100);
+        assert.equal(freeBilling.json.billing.subscriptionOffer.available, true);
+    } finally {
+        await server.stop();
+        await rm(dataDir, { recursive: true, force: true });
+    }
+});
 
-        const blockedPremiumGeneration = await api(server.baseUrl, '/api/generations', {
+test('mock checkout completion exercises the paywall locally without Stripe', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-mock-checkout-test-'));
+    const server = await startServer({
+        dataDir,
+        env: {
+            MOCK_STRIPE_RESPONSES: '1',
+            FREE_MONTHLY_CREDITS: '1',
+            SUBSCRIPTION_MONTHLY_CREDITS: '40'
+        }
+    });
+
+    try {
+        const signup = await api(server.baseUrl, '/api/auth/signup', {
             method: 'POST',
-            cookie,
-            idempotencyKey: 'stripe-starter-premium-model',
             body: {
-                provider: 'huggingface',
-                model: 'Qwen/Qwen-Image',
-                prompt: 'premium model after downgrade',
-                aspectRatio: '1:1'
+                email: `mock-checkout-${Date.now()}@example.com`,
+                password: 'Password123!'
             }
         });
-        assert.equal(blockedPremiumGeneration.status, 403);
-        assert.equal(blockedPremiumGeneration.json.error.code, 'plan_model_not_allowed');
+        const cookie = signup.cookie;
+
+        const pack = await api(server.baseUrl, '/api/billing/checkout', {
+            method: 'POST',
+            cookie,
+            body: { kind: 'credit_pack', packId: 'small' }
+        });
+        const packDone = await api(server.baseUrl, '/api/billing/mock-complete', {
+            method: 'POST',
+            cookie,
+            body: { sessionId: pack.json.checkoutSessionId }
+        });
+        assert.equal(packDone.status, 200);
+        assert.equal(packDone.json.user.credits.purchased, 100);
+
+        const reused = await api(server.baseUrl, '/api/billing/mock-complete', {
+            method: 'POST',
+            cookie,
+            body: { sessionId: pack.json.checkoutSessionId }
+        });
+        assert.equal(reused.status, 404);
+
+        const subscription = await api(server.baseUrl, '/api/billing/checkout', {
+            method: 'POST',
+            cookie,
+            body: { kind: 'subscription' }
+        });
+        const subscriptionDone = await api(server.baseUrl, '/api/billing/mock-complete', {
+            method: 'POST',
+            cookie,
+            body: { sessionId: subscription.json.checkoutSessionId }
+        });
+        assert.equal(subscriptionDone.status, 200);
+        assert.equal(subscriptionDone.json.user.plan, 'pro');
+        assert.equal(subscriptionDone.json.user.credits.allowance, 40);
+        assert.equal(subscriptionDone.json.user.credits.balance, 140);
     } finally {
         await server.stop();
         await rm(dataDir, { recursive: true, force: true });
@@ -643,6 +798,7 @@ test('production mode refuses unsafe config and stores secure hashed sessions wh
             BILLING_PROVIDER: 'stripe',
             STRIPE_SECRET_KEY: '',
             STRIPE_WEBHOOK_SECRET: '',
+            STRIPE_SUBSCRIPTION_PRICE_ID: '',
             STRIPE_PRO_PRICE_ID: '',
             APP_BASE_URL: ''
         }
@@ -651,7 +807,8 @@ test('production mode refuses unsafe config and stores secure hashed sessions wh
     assert.notEqual(unsafeStripe.exitCode, 0);
     assert.match(unsafeStripe.logs, /STRIPE_SECRET_KEY/);
     assert.match(unsafeStripe.logs, /STRIPE_WEBHOOK_SECRET/);
-    assert.match(unsafeStripe.logs, /STRIPE_PRO_PRICE_ID/);
+    assert.match(unsafeStripe.logs, /STRIPE_SUBSCRIPTION_PRICE_ID/);
+    assert.match(unsafeStripe.logs, /CREDIT_PACKS must include a Stripe priceId/);
     assert.match(unsafeStripe.logs, /APP_BASE_URL/);
     await rm(unsafeStripeDataDir, { recursive: true, force: true });
 
@@ -720,7 +877,7 @@ test('content policy blocks unsafe prompts and abuse reports are visible to admi
             idempotencyKey: 'blocked-policy-key',
             body: {
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'underage nude portrait',
                 aspectRatio: '1:1'
             }
@@ -811,55 +968,87 @@ test('readiness reports missing required providers without running provider work
     }
 });
 
-test('plan entitlements block unavailable models before generation jobs are created', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-entitlement-test-'));
+test('out-of-credit accounts are blocked before jobs are created and admins can grant credits', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-credits-test-'));
+    const adminToken = 'credits-admin-token';
     const server = await startServer({
         dataDir,
         env: {
-            STARTER_MONTHLY_GENERATION_LIMIT: '25'
+            FREE_MONTHLY_CREDITS: '0',
+            ADMIN_API_TOKEN: adminToken
         }
     });
 
     try {
+        const email = `credits-${Date.now()}@example.com`;
         const signup = await api(server.baseUrl, '/api/auth/signup', {
             method: 'POST',
             body: {
-                email: `entitlement-${Date.now()}@example.com`,
+                email,
                 password: 'Password123!'
             }
         });
         const cookie = signup.cookie;
-        assert.equal(signup.json.user.entitlements.allowedModels.includes('Qwen/Qwen-Image'), false);
+        assert.equal(signup.json.user.credits.balance, 0);
 
+        const generationBody = {
+            provider: 'huggingface',
+            model: 'Qwen/Qwen-Image',
+            prompt: 'credit gate test',
+            aspectRatio: '1:1'
+        };
         const blocked = await api(server.baseUrl, '/api/generations', {
             method: 'POST',
             cookie,
-            idempotencyKey: 'blocked-plan-model',
-            body: {
-                provider: 'huggingface',
-                model: 'Qwen/Qwen-Image',
-                prompt: 'premium model test',
-                aspectRatio: '1:1'
-            }
+            idempotencyKey: 'blocked-no-credits',
+            body: generationBody
         });
-        assert.equal(blocked.status, 403);
-        assert.equal(blocked.json.error.code, 'plan_model_not_allowed');
+        assert.equal(blocked.status, 402);
+        assert.equal(blocked.json.error.code, 'insufficient_credits');
 
-        const db = JSON.parse(await readFile(path.join(dataDir, 'db.json'), 'utf8'));
+        let db = JSON.parse(await readFile(path.join(dataDir, 'db.json'), 'utf8'));
         assert.equal(db.generationJobs.length, 0);
         assert.equal(db.providerUsageEvents.length, 0);
+
+        const unauthorizedGrant = await api(server.baseUrl, '/api/admin/credits', {
+            method: 'POST',
+            body: { email, credits: 5 }
+        });
+        assert.equal(unauthorizedGrant.status, 401);
+
+        const grant = await api(server.baseUrl, '/api/admin/credits', {
+            method: 'POST',
+            adminToken,
+            body: { email, credits: 5, note: 'beta tester' }
+        });
+        assert.equal(grant.status, 200);
+        assert.equal(grant.json.grant.credits.purchased, 5);
+
+        const allowed = await api(server.baseUrl, '/api/generations', {
+            method: 'POST',
+            cookie,
+            idempotencyKey: 'allowed-after-grant',
+            body: generationBody
+        });
+        assert.equal(allowed.status, 200);
+        assert.equal(allowed.json.credits.purchased, 4);
+
+        db = JSON.parse(await readFile(path.join(dataDir, 'db.json'), 'utf8'));
+        const grantTransaction = db.creditTransactions.find((transaction) => transaction.type === 'admin_grant');
+        assert.equal(grantTransaction.note, 'beta tester');
+        assert.equal(grantTransaction.purchasedDelta, 5);
     } finally {
         await server.stop();
         await rm(dataDir, { recursive: true, force: true });
     }
 });
 
-test('aborted generation marks the job failed without a usage event', async () => {
+test('aborted generation marks the job failed, refunds credits, and records no usage event', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'nano-banana-abort-test-'));
     const server = await startServer({
         dataDir,
         env: {
-            STARTER_MONTHLY_GENERATION_LIMIT: '25',
+            FREE_MONTHLY_CREDITS: '25',
             MOCK_PROVIDER_DELAY_MS: '2000'
         }
     });
@@ -885,7 +1074,7 @@ test('aborted generation marks the job failed without a usage event', async () =
             },
             body: JSON.stringify({
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'abort test image',
                 aspectRatio: '1:1'
             })
@@ -907,7 +1096,13 @@ test('aborted generation marks the job failed without a usage event', async () =
 
         const db = await readJson(path.join(dataDir, 'db.json'));
         assert.equal(db.generationJobs[0].errorCode, 'generation_aborted');
+        assert.equal(db.generationJobs[0].creditsRefunded, true);
         assert.equal(db.providerUsageEvents.length, 0);
+        assert.equal(db.users[0].credits.allowance, 25);
+        assert.deepEqual(
+            db.creditTransactions.map((transaction) => transaction.type),
+            ['free_allowance', 'generation_spend', 'generation_refund']
+        );
     } finally {
         await server.stop();
         await rm(dataDir, { recursive: true, force: true });
@@ -945,7 +1140,7 @@ test('admin summary and jobs require token and expose sanitized observability da
             idempotencyKey: 'admin-generation-key',
             body: {
                 provider: 'openai',
-                model: 'gpt-image-2',
+                model: 'gpt-image-2.5-flare',
                 prompt: 'admin observability image',
                 aspectRatio: '1:1'
             }
@@ -985,7 +1180,7 @@ test('generation rate limit returns rate_limited before provider work', async ()
     const server = await startServer({
         dataDir,
         env: {
-            STARTER_MONTHLY_GENERATION_LIMIT: '25',
+            FREE_MONTHLY_CREDITS: '25',
             GENERATION_RATE_LIMIT_PER_HOUR: '1'
         }
     });
@@ -1001,7 +1196,7 @@ test('generation rate limit returns rate_limited before provider work', async ()
         const cookie = signup.cookie;
         const body = {
             provider: 'openai',
-            model: 'gpt-image-2',
+            model: 'gpt-image-2.5-flare',
             prompt: 'mock test image',
             aspectRatio: '1:1'
         };
@@ -1047,6 +1242,8 @@ async function startServer({ dataDir, env = {}, mockProviders = true, includePro
         STRIPE_SECRET_KEY: '',
         STRIPE_WEBHOOK_SECRET: '',
         STRIPE_PRO_PRICE_ID: '',
+        STRIPE_SUBSCRIPTION_PRICE_ID: '',
+        CREDIT_PACKS: '',
         APP_BASE_URL: '',
         STRIPE_BILLING_PORTAL_RETURN_URL: '',
         MOCK_STRIPE_RESPONSES: '0'
@@ -1109,6 +1306,8 @@ async function runProductionServerUntilExit({ dataDir, env = {} }) {
         STRIPE_SECRET_KEY: '',
         STRIPE_WEBHOOK_SECRET: '',
         STRIPE_PRO_PRICE_ID: '',
+        STRIPE_SUBSCRIPTION_PRICE_ID: '',
+        CREDIT_PACKS: '',
         APP_BASE_URL: '',
         STRIPE_BILLING_PORTAL_RETURN_URL: '',
         MOCK_STRIPE_RESPONSES: '0'

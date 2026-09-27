@@ -86,7 +86,7 @@ async function startServer({ dataDir }) {
             API_RATE_LIMIT_PER_MINUTE: '1000',
             AUTH_RATE_LIMIT_PER_15_MINUTES: '1',
             GENERATION_RATE_LIMIT_PER_HOUR: '100',
-            STARTER_MONTHLY_GENERATION_LIMIT: '25',
+            FREE_MONTHLY_CREDITS: '25',
             LOG_LEVEL: process.env.LOG_LEVEL || 'silent'
         },
         stdio: ['ignore', 'pipe', 'pipe']
